@@ -78,9 +78,9 @@ class BaseWeb3Client(ABC):
 
     def _setup_contracts(self) -> None:
         """Initialize all contract instances."""
-        self.usdc_address = Web3.to_checksum_address(self.config.collateral)
-        self.usdc_abi = _load_abi("UChildERC20Proxy")
-        self.usdc = self._contract(self.usdc_address, self.usdc_abi)
+        self.pusd_address = Web3.to_checksum_address(self.config.collateral)
+        self.pusd_abi = _load_abi("CollateralToken")
+        self.pusd = self._contract(self.pusd_address, self.pusd_abi)
 
         self.conditional_tokens_address = Web3.to_checksum_address(
             self.config.conditional_tokens
@@ -88,6 +88,21 @@ class BaseWeb3Client(ABC):
         self.conditional_tokens_abi = _load_abi("ConditionalTokens")
         self.conditional_tokens = self._contract(
             self.conditional_tokens_address, self.conditional_tokens_abi
+        )
+
+        self.ctf_collateral_adapter_address = Web3.to_checksum_address(
+            "0xada100db00ca00073811820692005400218fce1f"
+        )
+        self.ctf_collateral_adapter_abi = _load_abi("CtfCollateralAdapter")
+        self.ctf_collateral_adapter = self._contract(
+            self.ctf_collateral_adapter_address, self.ctf_collateral_adapter_abi
+        )
+
+        self.ctf_auto_redeem_address = Web3.to_checksum_address(
+            "0xF3cFb6a6eBFeB51876289Eb235719EB1C65252B0"
+        )
+        self.ctf_auto_redeem = self._contract(
+            self.ctf_auto_redeem_address, _load_abi("CtfAutoRedeem")
         )
 
         self.exchange_address = Web3.to_checksum_address(self.config.exchange)
@@ -103,7 +118,7 @@ class BaseWeb3Client(ABC):
         )
 
         self.neg_risk_adapter_address = Web3.to_checksum_address(
-            "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+            self.config.neg_risk_adapter
         )
         self.neg_risk_adapter_abi = _load_abi("NegRiskAdapter")
         self.neg_risk_adapter = self._contract(
@@ -145,25 +160,27 @@ class BaseWeb3Client(ABC):
             abi=abi,
         )
 
-    def _encode_usdc_approve(self, address: ChecksumAddress) -> str:
-        """Encode USDC approval transaction."""
-        abi = self.usdc.encode_abi(
+    def _encode_pusd_approve(self, address: ChecksumAddress) -> str:
+        """Encode pUSD approval transaction."""
+        abi = self.pusd.encode_abi(
             abi_element_identifier="approve",
             args=[address, int(MAX_INT, base=16)],
         )
         return cast("str", abi)
 
-    def _encode_condition_tokens_approve(self, address: ChecksumAddress) -> str:
+    def _encode_condition_tokens_approve(
+        self, address: ChecksumAddress, approved: bool = True
+    ) -> str:
         """Encode conditional tokens approval transaction."""
         abi = self.conditional_tokens.encode_abi(
             abi_element_identifier="setApprovalForAll",
-            args=[address, True],
+            args=[address, approved],
         )
         return cast("str", abi)
 
-    def _encode_transfer_usdc(self, address: ChecksumAddress, amount: int) -> str:
-        """Encode USDC transfer transaction."""
-        abi = self.usdc.encode_abi(
+    def _encode_transfer_pusd(self, address: ChecksumAddress, amount: int) -> str:
+        """Encode pUSD transfer transaction."""
+        abi = self.pusd.encode_abi(
             abi_element_identifier="transfer",
             args=[address, amount],
         )
@@ -183,7 +200,7 @@ class BaseWeb3Client(ABC):
         """Encode split position transaction."""
         abi = self.conditional_tokens.encode_abi(
             abi_element_identifier="splitPosition",
-            args=[self.usdc_address, HASH_ZERO, condition_id, [1, 2], amount],
+            args=[self.pusd_address, HASH_ZERO, condition_id, [1, 2], amount],
         )
         return cast("str", abi)
 
@@ -191,15 +208,15 @@ class BaseWeb3Client(ABC):
         """Encode merge positions transaction."""
         abi = self.conditional_tokens.encode_abi(
             abi_element_identifier="mergePositions",
-            args=[self.usdc_address, HASH_ZERO, condition_id, [1, 2], amount],
+            args=[self.pusd_address, HASH_ZERO, condition_id, [1, 2], amount],
         )
         return cast("str", abi)
 
     def _encode_redeem(self, condition_id: Keccak256) -> str:
         """Encode redeem positions transaction."""
-        abi = self.conditional_tokens.encode_abi(
+        abi = self.ctf_collateral_adapter.encode_abi(
             abi_element_identifier="redeemPositions",
-            args=[self.usdc_address, HASH_ZERO, condition_id, [1, 2]],
+            args=[self.pusd_address, HASH_ZERO, condition_id, [1, 2]],
         )
         return cast("str", abi)
 
@@ -238,7 +255,7 @@ class BaseWeb3Client(ABC):
     def get_poly_proxy_address(self, address: EthAddress | None = None) -> EthAddress:
         """Get the Polymarket proxy address."""
         address = address or self.account.address
-        result = self.exchange.functions.getPolyProxyWalletAddress(address).call()
+        result = self.exchange.functions.getProxyWalletAddress(address).call()
         return cast("EthAddress", result)
 
     def get_safe_proxy_address(self, address: EthAddress | None = None) -> EthAddress:
@@ -272,15 +289,15 @@ class BaseWeb3Client(ABC):
         """Get POL balance for the base address associated with the private key."""
         return round(self.w3.eth.get_balance(self.account.address) / 10**18, 4)
 
-    def get_usdc_balance(self, address: EthAddress | None = None) -> float:
+    def get_pusd_balance(self, address: EthAddress | None = None) -> float:
         """
-        Get USDC balance of an address.
+        Get pUSD balance of an address.
 
         If no address is given, returns the balance of the instantiated client.
         """
         if address is None:
             address = self.address
-        balance_res = self.usdc.functions.balanceOf(address).call()
+        balance_res = self.pusd.functions.balanceOf(address).call()
         return float(balance_res / 1e6)
 
     def get_token_balance(
@@ -352,40 +369,40 @@ class BaseWeb3Client(ABC):
         """
 
     def split_position(
-        self, condition_id: Keccak256, amount: float, neg_risk: bool = True
+        self, condition_id: Keccak256, amount: float, neg_risk: bool
     ) -> TransactionReceipt:
-        """Split USDC into two complementary positions."""
+        """Split pUSD into two complementary positions."""
         amount_int = int(amount * 1e6)
 
         to = (
             self.neg_risk_adapter_address
             if neg_risk
-            else self.conditional_tokens_address
+            else self.ctf_collateral_adapter_address
         )
         data = self._encode_split(condition_id, amount_int)
 
         return self._execute(to, data, "Split Position", metadata="split")
 
     def merge_position(
-        self, condition_id: Keccak256, amount: float, neg_risk: bool = True
+        self, condition_id: Keccak256, amount: float, neg_risk: bool
     ) -> TransactionReceipt:
-        """Merge two complementary positions into USDC."""
+        """Merge two complementary positions into pUSD."""
         amount_int = int(amount * 1e6)
 
         to = (
             self.neg_risk_adapter_address
             if neg_risk
-            else self.conditional_tokens_address
+            else self.ctf_collateral_adapter_address
         )
         data = self._encode_merge(condition_id, amount_int)
 
         return self._execute(to, data, "Merge Position", metadata="merge")
 
     def redeem_position(
-        self, condition_id: Keccak256, amounts: list[float], neg_risk: bool = True
+        self, condition_id: Keccak256, amounts: list[float], neg_risk: bool
     ) -> TransactionReceipt:
         """
-        Redeem positions into USDC.
+        Redeem positions into pUSD.
 
         Args:
             condition_id: Condition ID
@@ -399,7 +416,7 @@ class BaseWeb3Client(ABC):
         to = (
             self.neg_risk_adapter_address
             if neg_risk
-            else self.conditional_tokens_address
+            else self.ctf_collateral_adapter_address
         )
         data = (
             self._encode_redeem_neg_risk(condition_id, int_amounts)
@@ -415,7 +432,7 @@ class BaseWeb3Client(ABC):
         amount: float,
     ) -> TransactionReceipt:
         """
-        Convert neg risk No positions to Yes positions and USDC.
+        Convert neg risk No positions to Yes positions and pUSD.
 
         Args:
             question_ids: Array of question_ids representing positions to convert
@@ -431,6 +448,32 @@ class BaseWeb3Client(ABC):
         )
 
         return self._execute(to, data, "Convert Positions", metadata="convert")
+
+    def auto_redeem_enable(self) -> TransactionReceipt:
+        """Enable CTF auto-redeem as a ConditionalTokens operator."""
+        data = self._encode_condition_tokens_approve(
+            address=self.ctf_auto_redeem_address,
+            approved=True,
+        )
+        return self._execute(
+            self.conditional_tokens_address,
+            data,
+            "Auto Redeem Enable",
+            metadata="auto_redeem_enable",
+        )
+
+    def auto_redeem_disable(self) -> TransactionReceipt:
+        """Disable CTF auto-redeem as a ConditionalTokens operator."""
+        data = self._encode_condition_tokens_approve(
+            address=self.ctf_auto_redeem_address,
+            approved=False,
+        )
+        return self._execute(
+            self.conditional_tokens_address,
+            data,
+            "Auto Redeem Disable",
+            metadata="auto_redeem_disable",
+        )
 
 
 class PolymarketWeb3Client(BaseWeb3Client):
@@ -602,9 +645,9 @@ class PolymarketWeb3Client(BaseWeb3Client):
         return receipt
 
     def set_collateral_approval(self, spender: ChecksumAddress) -> TransactionReceipt:
-        """Set approval for spender on USDC."""
-        to = self.usdc_address
-        data = self._encode_usdc_approve(address=spender)
+        """Set approval for spender on pUSD collateral."""
+        to = self.pusd_address
+        data = self._encode_pusd_approve(address=spender)
         return self._execute(to, data, "Collateral Approval")
 
     def set_conditional_tokens_approval(
@@ -618,25 +661,29 @@ class PolymarketWeb3Client(BaseWeb3Client):
     def set_all_approvals(self) -> list[TransactionReceipt]:
         """Set all necessary approvals."""
         receipts = []
-        print("Approving ConditionalTokens as spender on USDC")
+        print("Approving ConditionalTokens as spender on pUSD")
         receipts.append(
             self.set_collateral_approval(spender=self.conditional_tokens_address)
         )
-        print("Approving CTFExchange as spender on USDC")
+        print("Approving CtfCollateralAdapter as spender on pUSD")
+        receipts.append(
+            self.set_collateral_approval(spender=self.ctf_collateral_adapter_address)
+        )
+        print("Approving CTFExchange V2 as spender on pUSD")
         receipts.append(self.set_collateral_approval(spender=self.exchange_address))
-        print("Approving NegRiskCtfExchange as spender on USDC")
+        print("Approving NegRiskCtfExchange V2 as spender on pUSD")
         receipts.append(
             self.set_collateral_approval(spender=self.neg_risk_exchange_address)
         )
-        print("Approving NegRiskAdapter as spender on USDC")
+        print("Approving NegRiskAdapter as spender on pUSD")
         receipts.append(
             self.set_collateral_approval(spender=self.neg_risk_adapter_address)
         )
-        print("Approving CTFExchange as spender on ConditionalTokens")
+        print("Approving CTFExchange V2 as spender on ConditionalTokens")
         receipts.append(
             self.set_conditional_tokens_approval(spender=self.exchange_address)
         )
-        print("Approving NegRiskCtfExchange as spender on ConditionalTokens")
+        print("Approving NegRiskCtfExchange V2 as spender on ConditionalTokens")
         receipts.append(
             self.set_conditional_tokens_approval(spender=self.neg_risk_exchange_address)
         )
@@ -644,22 +691,28 @@ class PolymarketWeb3Client(BaseWeb3Client):
         receipts.append(
             self.set_conditional_tokens_approval(spender=self.neg_risk_adapter_address)
         )
+        print("Approving CtfCollateralAdapter as spender on ConditionalTokens")
+        receipts.append(
+            self.set_conditional_tokens_approval(
+                spender=self.ctf_collateral_adapter_address
+            )
+        )
         print("All approvals set!")
         return receipts
 
-    def transfer_usdc(self, recipient: EthAddress, amount: float) -> TransactionReceipt:
-        """Transfer USDC to recipient."""
-        balance = self.get_usdc_balance(address=self.address)
+    def transfer_pusd(self, recipient: EthAddress, amount: float) -> TransactionReceipt:
+        """Transfer pUSD to recipient."""
+        balance = self.get_pusd_balance(address=self.address)
         if balance < amount:
-            msg = f"Insufficient USDC balance: {balance} < {amount}"
+            msg = f"Insufficient pUSD balance: {balance} < {amount}"
             raise ValueError(msg)
 
         amount_int = int(amount * 1e6)
-        to = self.usdc_address
-        data = self._encode_transfer_usdc(
+        to = self.pusd_address
+        data = self._encode_transfer_pusd(
             self.w3.to_checksum_address(recipient), amount_int
         )
-        return self._execute(to, data, "USDC Transfer")
+        return self._execute(to, data, "pUSD Transfer")
 
     def transfer_token(
         self, token_id: str, recipient: EthAddress, amount: float
@@ -811,7 +864,7 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
                 "data": HexStr(encoded_txn),
             }
             estimated_gas = self.w3.eth.estimate_gas(estimation_txn)
-            gas_limit = str(int(estimated_gas * 1.3 + 100000))
+            gas_limit = str(int(estimated_gas * 1.3))
         except TimeExhausted as e:
             print(
                 f"Timeout during gas estimation for proxy transaction, using default: {e}"

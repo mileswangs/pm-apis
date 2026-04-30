@@ -128,6 +128,7 @@ class OrderEvent(BaseModel):  # type: ignore[no-redef] # event_owner is the same
     timestamp: Optional[datetime] = None  # time of event
 
     event_type: Optional[Literal["order"]] = None
+    exchange_version: Optional[str] = None
     type: Literal["PLACEMENT", "UPDATE", "CANCELLATION"]
 
     status: Literal["LIVE", "CANCELED", "MATCHED", "CANCELED_MARKET_RESOLVED"]
@@ -162,6 +163,7 @@ class TradeEvent(BaseModel):  # type: ignore[no-redef] # event_owner is the same
     timestamp: Optional[datetime] = None  # time of event
 
     event_type: Optional[Literal["trade"]] = None
+    exchange_version: Optional[str] = None
     type: Optional[Literal["TRADE"]] = None
 
     status: Literal["MATCHED", "MINED", "CONFIRMED", "RETRYING", "FAILED"]

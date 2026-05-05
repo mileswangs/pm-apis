@@ -169,6 +169,12 @@ class MarketRewards(BaseModel):
     market_competitiveness: float
 
 
+class MarketIDs(BaseModel):
+    condition_id: Keccak256
+    primary_token_id: str
+    secondary_token_id: str
+
+
 class ClobMarket(BaseModel):
     # Core market information
     token_ids: list[Token] = Field(alias="tokens")
@@ -280,9 +286,7 @@ class ClobMarketInfoRewards(BaseModel):
     min_size: Optional[float] = Field(default=None, alias="mi", ge=0)
     max_spread: Optional[float] = Field(default=None, alias="ma", ge=0)
     enabled: Optional[bool] = Field(default=None, alias="e")
-    minimum_order_age_seconds: Optional[int] = Field(
-        default=None, alias="moas", ge=0
-    )
+    minimum_order_age_seconds: Optional[int] = Field(default=None, alias="moas", ge=0)
 
 
 class ClobMarketInfo(BaseModel):
@@ -293,12 +297,12 @@ class ClobMarketInfo(BaseModel):
     tokens: list[ClobMarketInfoToken] = Field(alias="t")
     minimum_order_size: float = Field(alias="mos")
     minimum_tick_size: float = Field(alias="mts")
-    maker_base_fee: int = Field(alias="mbf")
-    taker_base_fee: int = Field(alias="tbf")
+    maker_base_fee: Optional[int] = Field(None, alias="mbf")
+    taker_base_fee: Optional[int] = Field(None, alias="tbf")
     rfq_enabled: Optional[bool] = Field(None, alias="rfqe")
     taker_order_delay_enabled: Optional[bool] = Field(None, alias="itode")
     blockaid_check_enabled: bool = Field(alias="ibce")
-    fee_data: ClobFeeData = Field(alias="fd")
+    fee_data: Optional[ClobFeeData] = Field(None, alias="fd")
     minimum_order_age_seconds: Optional[int] = Field(None, alias="oas")
 
 
@@ -328,6 +332,7 @@ class MakerOrder(BaseModel):
     matched_amount: float
     price: float
     outcome: str
+
 
 class PolygonTrade(BaseModel):  # type: ignore[no-redef] # id is the same as trade_id
     trade_id: str = Field(alias="id")
@@ -377,7 +382,9 @@ class OrderSummary(BaseModel):
 class PriceLevel(OrderSummary):
     side: Literal["BUY", "SELL"]
 
+
 TickSize = Literal["0.1", "0.01", "0.001", "0.0001"]
+
 
 class OrderBookSummary(BaseModel):
     condition_id: Keccak256 = Field(alias="market")
@@ -392,7 +399,9 @@ class OrderBookSummary(BaseModel):
     neg_risk: Optional[bool] = None
 
     @field_validator("last_trade_price", mode="before")
-    def handle_empty_last_trade_price(cls, v: Optional[float] | Literal[""]) -> Optional[float]:
+    def handle_empty_last_trade_price(
+        cls, v: Optional[float] | Literal[""]
+    ) -> Optional[float]:
         if v == "":
             return None
         return v

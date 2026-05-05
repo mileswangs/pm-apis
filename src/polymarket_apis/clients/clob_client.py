@@ -18,6 +18,7 @@ from ..types.clob_types import (
     CryptoOutcome,
     DailyEarnedReward,
     FeeInfo,
+    MarketIDs,
     MarketOrderArgs,
     MarketRewards,
     Midpoint,
@@ -47,6 +48,7 @@ from ..utilities.endpoints import (
     ARE_ORDERS_SCORING,
     CANCEL,
     CANCEL_ALL,
+    CANCEL_MARKET_ORDERS,
     CANCEL_ORDERS,
     CREATE_API_KEY,
     CREATE_READONLY_API_KEY,
@@ -97,13 +99,17 @@ from ..utilities.order_builder.helpers import (
 )
 from ..utilities.order_builder.model import SignedOrder
 from ..utilities.signing.signer import Signer
-from ..utilities.web3.helpers import get_signature_type_from_runtime_code
+from ..utilities.web3.helpers import (
+    detect_wallet_signature_type as detect_wallet_signature_type_from_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class PolymarketReadOnlyClobClient:
-    def __init__(self, tick_size_ttl: float = 300.0, proxy: Optional[str] = None) -> None:
+    def __init__(
+        self, tick_size_ttl: float = 300.0, proxy: Optional[str] = None
+    ) -> None:
         self.client = httpx.Client(http2=True, timeout=30.0, proxy=proxy)
         self.async_client = httpx.AsyncClient(http2=True, timeout=30.0, proxy=proxy)
         self.base_url: str = "https://clob.polymarket.com"
@@ -123,6 +129,20 @@ class PolymarketReadOnlyClobClient:
         response = self.client.get(self.base_url)
         response.raise_for_status()
         return cast("str", response.json())
+
+    def detect_wallet_signature_type(self, address: EthAddress) -> Literal[0, 1, 2, 3] | None:
+        """
+        Detect wallet signature type from an address.
+
+        Returns:
+            - 0 for EOA / undeployed smart contract computed address
+            - 1 for Polymarket proxy wallet
+            - 2 for Safe/Gnosis proxy wallet
+            - 3 for Deposit wallet
+
+
+        """
+        return detect_wallet_signature_type_from_runtime(address)
 
     def get_utc_time(self) -> datetime:
         # parse server timestamp into utc datetime
@@ -175,7 +195,9 @@ class PolymarketReadOnlyClobClient:
         return fee_rate
 
     def get_clob_market_info(self, condition_id: Keccak256) -> ClobMarketInfo:
-        response = self.client.get(self._build_url(f"{GET_CLOB_MARKET_INFO}{condition_id}"))
+        response = self.client.get(
+            self._build_url(f"{GET_CLOB_MARKET_INFO}{condition_id}")
+        )
         response.raise_for_status()
         info = ClobMarketInfo(**response.json())
         for token in info.tokens:
@@ -184,6 +206,10 @@ class PolymarketReadOnlyClobClient:
                 cast("TickSize", str(info.minimum_tick_size)),
                 monotonic(),
             )
+            if info.fee_data is None:
+                self.__fee_infos[token.token_id] = FeeInfo()
+                continue
+
             self.__fee_infos[token.token_id] = FeeInfo(
                 rate=info.fee_data.rate,
                 exponent=float(info.fee_data.exponent),
@@ -342,6 +368,12 @@ class PolymarketReadOnlyClobClient:
         response.raise_for_status()
         return ClobMarket(**response.json())
 
+    def get_market_ids_from_token(self, token_id: str) -> MarketIDs:
+        """Resolve the parent condition and complementary token IDs for a token."""
+        response = self.client.get(self._build_url(f"{GET_MARKET_BY_TOKEN}{token_id}"))
+        response.raise_for_status()
+        return MarketIDs(**response.json())
+
     def get_markets(self, next_cursor: str = "MA==") -> PaginatedResponse[ClobMarket]:
         """Get paginated ClobMarkets."""
         params = {"next_cursor": next_cursor}
@@ -467,7 +499,6 @@ class PolymarketReadOnlyClobClient:
         self.client.close()
         await self.async_client.aclose()
 
-
 def _detect_wallet_signature_type(
     address: EthAddress,
 ) -> Literal[0, 1, 2] | None:
@@ -505,14 +536,15 @@ class PolymarketClobClient(PolymarketReadOnlyClobClient):
         address: EthAddress,
         creds: ApiCreds | None = None,
         chain_id: Literal[137, 80002] = POLYGON,
-        signature_type: Literal[0, 1, 2] | None = None, # 0 - EOA wallet, 1 - Proxy wallet, 2 - Gnosis Safe wallet
+        signature_type: Literal[0, 1, 2, 3]
+        | None = None,  # 0 - EOA wallet, 1 - Proxy wallet, 2 - Gnosis Safe wallet, 3 - Deposit wallet
         proxy: Optional[str] = None,
     ) -> None:
         super().__init__(proxy=proxy)
         self.address = address
         self.signer = Signer(private_key=private_key, chain_id=chain_id)
         if signature_type is None:
-            signature_type = _detect_wallet_signature_type(address)
+            signature_type = self.detect_wallet_signature_type(address)
         self.signature_type = signature_type
         self.builder = OrderBuilder(
             signer=self.signer,
@@ -795,9 +827,7 @@ class PolymarketClobClient(PolymarketReadOnlyClobClient):
             return order_responses
 
     def create_and_post_orders(
-            self,
-            args: list[OrderArgs],
-            order_types: list[OrderType] | None = None
+        self, args: list[OrderArgs], order_types: list[OrderType] | None = None
     ) -> list[OrderPostResponse] | None:
         """Utility function to create and publish multiple orders at once."""
         if order_types is None:
@@ -807,13 +837,14 @@ class PolymarketClobClient(PolymarketReadOnlyClobClient):
             msg = "order_types must have same length as args"
             raise ValueError(msg)
 
-        return self.post_orders([
-            PostOrdersArgs(
-                order=self.create_order(order_args),
-                order_type=order_type
-            )
-            for order_args, order_type in zip(args, order_types, strict=True)
-        ])
+        return self.post_orders(
+            [
+                PostOrdersArgs(
+                    order=self.create_order(order_args), order_type=order_type
+                )
+                for order_args, order_type in zip(args, order_types, strict=True)
+            ]
+        )
 
     def calculate_market_price(
         self, token_id: str, side: str, amount: float, order_type: OrderType
@@ -953,6 +984,36 @@ class PolymarketClobClient(PolymarketReadOnlyClobClient):
         response = self.client.delete(self._build_url(CANCEL_ALL), headers=headers)
         response.raise_for_status()
         return OrderCancelResponse(**response.json())
+
+    def _cancel_orders_for_market(
+        self, body: dict[str, str]
+    ) -> OrderCancelResponse:
+        request_args = RequestArgs(
+            method="DELETE",
+            request_path=CANCEL_MARKET_ORDERS,
+            body=body,
+        )
+        headers = create_level_2_headers(self.signer, self.creds, request_args)
+
+        response = self.client.request(
+            "DELETE",
+            self._build_url(CANCEL_MARKET_ORDERS),
+            headers=headers,
+            content=json.dumps(body).encode("utf-8"),
+        )
+        response.raise_for_status()
+        return OrderCancelResponse(**response.json())
+
+    def cancel_orders_for_condition_id(
+        self,
+        condition_id: Keccak256,
+    ) -> OrderCancelResponse:
+        """Cancels all orders for both token_ids of a specific condition_id."""
+        return self._cancel_orders_for_market({"market": condition_id})
+
+    def cancel_orders_for_token_id(self, token_id: str) -> OrderCancelResponse:
+        """Cancels all orders for a specific token_id."""
+        return self._cancel_orders_for_market({"asset_id": token_id})
 
     def is_order_scoring(self, order_id: Keccak256) -> bool:
         """Check if the order is currently scoring."""

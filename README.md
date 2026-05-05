@@ -64,12 +64,14 @@ Read-only order book related operations.
   - get one or more order books, best price, spread, midpoint, and last trade price by `token_id`
 - **Miscellaneous**
   - get market microstructure parameters by `condition_id` (`get_clob_market_info`) - tokens, tick size, minimum order size, fees, rewards, RFQ flags, and order-age settings
+  - get `condition_id` and its corresponding `token_id`s for a market by `token_id`
   - get crypto outcomes by `slug` for up/down markets
   - get recent price history by `token_id` in the last 1h, 6h, 1d, 1w, 1m
   - get price history by `token_id` in a start/end interval
   - get all price history by `token_id` in 2-minute increments
   - get `ClobMarket` by `condition_id`
   - get all `ClobMarkets`
+
 
 ### PolymarketClobClient
 Order book related operations.
@@ -81,10 +83,13 @@ Order book related operations.
     - signature_type=0 for EOAs (Externally Owned Accounts)
     - signature_type=1 for Email/Magic wallets
     - signature_type=2 for Safe/Gnosis wallets
+    - signature_type=3 for Deposit wallets
 - All operations from `PolymarketReadOnlyClobClient`
 - **Orders**
   - create and post limit or market orders
   - cancel one or more orders by `order_id`
+  - cancel all orders for a `condition_id`/`token_id`
+  - cancel all orders
   - get active orders
   - send heartbeat to keep orders alive
 - **Trades**
@@ -97,6 +102,7 @@ Order book related operations.
 - **Miscellaneous**
   - get pUSD balance
   - get token balance by `token_id`
+  - detect wallet signature type
 
 ### PolymarketGammaClient
 Market and event related operations.
@@ -163,20 +169,40 @@ Portfolio related operations.
   - get user rank on the profit/volume leaderboards by user address for a recent window (`1d`, `7d`, `30d`, `all`)
   - get top users on the profit/volume leaderboards for a recent window (`1d`, `7d`, `30d`, `all`)
 
-### PolymarketWeb3Client
-Blockchain operations that pay gas.
+### `PolymarketWeb3Client` / `PolymarketGaslessWeb3Client`
+
+Blockchain clients for blockchain based Polymarket operations. Both clients support the same core operations detailed below 
+
+- `PolymarketWeb3Client` submits transactions directly on-chain, so the base EOA for the provided `private_key` must hold POL for gas, regardless of `signature_type`.
+- `PolymarketGaslessWeb3Client` submits transactions through the relayer, and Polymarket pays for gas
+
 
 - **Authentication**
-  - `private_key`
-  - `signature_type`
+  - `PolymarketWeb3Client`
+    - `private_key`
+    - `signature_type`
+  - `PolymarketGaslessWeb3Client`
+    - `private_key`
+    - `signature_type`
+    - either `relayer_api_key` ([create here](https://polymarket.com/settings?tab=api-keys)) - unlimited rate limit
+      - the client derives `RELAYER_API_KEY_ADDRESS` from the wallet automatically
+    - or `builder_creds` ([create here](https://polymarket.com/settings?tab=builder)) as `ApiCreds`
+
 - **Supported wallet types**
-  - `EOA` (`signature_type=0`)
-  - Email/Magic wallets (`signature_type=1`)
-  - Safe/Gnosis wallets (`signature_type=2`)
+  - `PolymarketWeb3Client`
+    - EOA wallets (`signature_type=0`)
+    - Email/Magic proxy wallets (`signature_type=1`)
+    - Safe/Gnosis wallets (`signature_type=2`)
+  - `PolymarketGaslessWeb3Client`
+    - EOA wallets (`signature_type=0`) are NOT supported for gasless transactions
+    - Email/Magic proxy wallets (`signature_type=1`)
+    - Safe/Gnosis wallets (`signature_type=2`)
+    - Deposit wallets (`signature_type=3`)
+
 - **Setup and deployment**
-  - set approvals for all needed pUSD and conditional token spenders
-  - Safe/Gnosis wallet holders need to run `deploy_safe()` before setting approvals
-- **Balance**
+  - set approvals/disapprovals for all needed pUSD and conditional token spenders
+    - Safe/Gnosis and Deposit wallet holders need to run `deploy_safe_wallet()` or `deploy_deposit_wallet()` respectively before using Safe transactions if the Safe has not been deployed yet
+- **Balances**
   - get POL balance by user address
   - get pUSD balance by user address
   - get token balance by `token_id` and user address
@@ -186,26 +212,13 @@ Blockchain operations that pay gas.
 - **Token/pUSD conversions**
   - split pUSD into complementary tokens with `condition_id`, amount, and `neg_risk`
   - merge complementary tokens into pUSD with `condition_id`, amount, and `neg_risk`
-  - redeem token into pUSD with `condition_id`, amounts array of [`Yes` shares, `No` shares], and `neg_risk`
-  - convert one or more `No` tokens in a negative risk event into a collection of pUSD and `Yes` tokens on the other markets in the event
+  - redeem tokens into pUSD with `condition_id`, amounts array of [`Yes` shares, `No` shares], and `neg_risk`
+  - convert one or more `No` tokens in a negative-risk event into pUSD plus `Yes` tokens on the other markets in the event
   - enable/disable auto-redeem
+- **Miscellaneous**
+  - detect wallet signature type
+  - get base/poly proxy/safe proxy/deposit wallet address from `private_key`
 
-
-### PolymarketGaslessWeb3Client
-Relayed blockchain operations that do not pay gas.
-
-- **Authentication**
-  - `private_key`
-  - `signature_type`
-  - requires `relayer_api_key` - [get one here](https://polymarket.com/settings?tab=api-keys) 
-  - the client derives `RELAYER_API_KEY_ADDRESS` from the wallet automatically
-- **Supported wallet types**
-  - Email/Magic wallets (`signature_type=1`)
-  - Safe/Gnosis wallets (`signature_type=2`)
-- **Available operations**
-  - balance methods from `PolymarketWeb3Client` (read only)
-  - split / merge / convert / redeem (gasless)
-  - enable/disable auto-redeem
 
 
 ### PolymarketWebsocketsClient

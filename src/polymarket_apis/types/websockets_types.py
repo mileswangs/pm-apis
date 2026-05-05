@@ -429,7 +429,9 @@ class SportsGameUpdate(ScoreStateFields):
 
     home_team: Optional[str] = Field(None, alias="homeTeam")
     away_team: Optional[str] = Field(None, alias="awayTeam")
-    status: Optional[str] = None
+    status: Optional[str] = (
+        None  # Literal["InProgress", "Break", "Final", "finished", "running"]
+    )
 
     updated_at: Optional[datetime] = Field(None, alias="updatedAt")
     event_state: Optional[SportsEventState] = Field(None, alias="eventState")

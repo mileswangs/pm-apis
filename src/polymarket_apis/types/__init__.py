@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         ContractConfig,
         CreateOrderOptions,
         DailyEarnedReward,
+        MarketIDs,
         MarketOrderArgs,
         MarketRewards,
         Midpoint,
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
         Series,
         Tag,
     )
+    from .web3_types import DepositWalletCall
     from .websockets_types import (
         AggOrderBookSummary,
         ActivityOrderMatchEvent,
@@ -132,6 +134,7 @@ __all__ = [
     "CryptoPriceUpdateEvent",
     "CreateOrderOptions",
     "DailyEarnedReward",
+    "DepositWalletCall",
     "EmptyString",
     "ErrorEvent",
     "EthAddress",
@@ -151,6 +154,7 @@ __all__ = [
     "LiveDataTickSizeChangeEvent",
     "LiveDataTradeEvent",
     "MarketEvents",
+    "MarketIDs",
     "MarketOrderArgs",
     "MarketResolvedEvent",
     "MarketRewards",
@@ -216,6 +220,7 @@ _EXPORT_MAP = {
     "BookParams": ".clob_types",
     "ClobMarket": ".clob_types",
     "ClobMarketInfo": ".clob_types",
+    "MarketIDs": ".clob_types",
     "ClobReward": ".gamma_types",
     "CommentEvent": ".websockets_types",
     "ContractConfig": ".clob_types",
@@ -223,6 +228,7 @@ _EXPORT_MAP = {
     "CryptoPriceUpdateEvent": ".websockets_types",
     "CreateOrderOptions": ".clob_types",
     "DailyEarnedReward": ".clob_types",
+    "DepositWalletCall": ".web3_types",
     "EmptyString": ".common",
     "ErrorEvent": ".websockets_types",
     "EthAddress": ".common",

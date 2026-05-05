@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from json import dumps, load
 from pathlib import Path
-from typing import Literal, Optional, cast
+from time import sleep, time
+from typing import Any, Literal, Optional, cast
 
 import httpx
 from eth_account.messages import encode_defunct
@@ -15,18 +16,26 @@ from web3.middleware import (
 )
 from web3.types import TxParams, Wei
 
+from ..types.clob_types import ApiCreds, RequestArgs
 from ..types.common import EthAddress, Keccak256
-from ..types.web3_types import TransactionReceipt
+from ..types.web3_types import DepositWalletCall, TransactionReceipt
 from ..utilities.config import get_contract_config
-from ..utilities.constants import ADDRESS_ZERO, HASH_ZERO, POLYGON
+from ..utilities.constants import (
+    ADDRESS_ZERO,
+    DEPOSIT_WALLET_DOMAIN_NAME,
+    DEPOSIT_WALLET_DOMAIN_VERSION,
+    HASH_ZERO,
+    POLYGON,
+)
 from ..utilities.exceptions import SafeAlreadyDeployedError
-from ..utilities.headers import create_relayer_headers
+from ..utilities.headers import create_level_2_headers, create_relayer_headers
 from ..utilities.signing.signer import Signer
 from ..utilities.web3.abis.custom_contract_errors import CUSTOM_ERROR_DICT
 from ..utilities.web3.helpers import (
     SafeTxn,
     create_proxy_struct,
     create_safe_create_signature,
+    derive_deposit_wallet,
     get_index_set,
     get_packed_signature,
     get_signature_type_from_runtime_code,
@@ -58,10 +67,10 @@ class BaseWeb3Client(ABC):
     def __init__(
         self,
         private_key: HexStr,
-        signature_type: Literal[0, 1, 2],
+        signature_type: Literal[0, 1, 2, 3],
         chain_id: Literal[137, 80002] = POLYGON,
         rpc_url: str = "https://tenderly.rpc.polygon.community",
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
     ):
         self.client = httpx.Client(http2=True, timeout=30.0, proxy=proxy)
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
@@ -82,6 +91,14 @@ class BaseWeb3Client(ABC):
         self.pusd_abi = _load_abi("CollateralToken")
         self.pusd = self._contract(self.pusd_address, self.pusd_abi)
 
+        self.usdc_e_address = Web3.to_checksum_address(
+            "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        )
+
+        self.collateral_onramp_address = Web3.to_checksum_address(
+            "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+        )
+
         self.conditional_tokens_address = Web3.to_checksum_address(
             self.config.conditional_tokens
         )
@@ -96,6 +113,14 @@ class BaseWeb3Client(ABC):
         self.ctf_collateral_adapter_abi = _load_abi("CtfCollateralAdapter")
         self.ctf_collateral_adapter = self._contract(
             self.ctf_collateral_adapter_address, self.ctf_collateral_adapter_abi
+        )
+
+        self.neg_risk_ctf_collateral_adapter = Web3.to_checksum_address(
+            "0xada2005600dec949baf300f4c6120000bdb6eaab"
+        )
+        self.neg_risk_ctf_collateral_abi = _load_abi("NegRiskCtfCollateralAdapter")
+        self.neg_risk_ctf_collateral = self._contract(
+            self.neg_risk_ctf_collateral_adapter, self.neg_risk_ctf_collateral_abi
         )
 
         self.ctf_auto_redeem_address = Web3.to_checksum_address(
@@ -141,17 +166,32 @@ class BaseWeb3Client(ABC):
             self.safe_proxy_factory_address, self.safe_proxy_factory_abi
         )
 
+        self.deposit_wallet_factory_address = Web3.to_checksum_address(
+            "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+        )
+        self.deposit_wallet_implementation_address = Web3.to_checksum_address(
+            "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+        )
+
+        self.multisend_address = Web3.to_checksum_address(
+            "0xa238cbeb142c10ef7ad8442c6d1f9e89e07e7761"
+        )
+        self.multisend_abi = _load_abi("MultiSend")
+        self.multisend = self._contract(self.multisend_address, self.multisend_abi)
+
     def _setup_address(self) -> None:
         """Setup address based on signature type."""
         match self.signature_type:
             case 0:
                 self.address = self.account.address
             case 1:
-                self.address = self.get_poly_proxy_address()
+                self.address = self.get_poly_proxy_wallet_address()
             case 2:
-                self.address = self.get_safe_proxy_address()
+                self.address = self.get_safe_proxy_wallet_address()
                 self.safe_abi = _load_abi("Safe")
                 self.safe = self._contract(self.address, self.safe_abi)
+            case 3:
+                self.address = self.get_expected_deposit_wallet()
 
     def _contract(self, address: AnyAddress | str | bytes, abi: ABI) -> Contract:
         """Create contract instance."""
@@ -160,11 +200,13 @@ class BaseWeb3Client(ABC):
             abi=abi,
         )
 
-    def _encode_pusd_approve(self, address: ChecksumAddress) -> str:
-        """Encode pUSD approval transaction."""
+    def _encode_erc20_approve(
+        self, address: ChecksumAddress, amount: int | None = None
+    ) -> str:
+        """Encode ERC-20 approval transaction."""
         abi = self.pusd.encode_abi(
             abi_element_identifier="approve",
-            args=[address, int(MAX_INT, base=16)],
+            args=[address, int(MAX_INT, base=16) if amount is None else amount],
         )
         return cast("str", abi)
 
@@ -242,39 +284,79 @@ class BaseWeb3Client(ABC):
 
     def _encode_proxy(self, proxy_txn: dict[str, object]) -> str:
         """Encode proxy transaction."""
+        return self._encode_proxy_calls([proxy_txn])
+
+    def _encode_proxy_calls(self, proxy_txns: list[dict[str, object]]) -> str:
+        """Encode one or more proxy transactions."""
         abi = self.proxy_factory.encode_abi(
             abi_element_identifier="proxy",
-            args=[[proxy_txn]],
+            args=[proxy_txns],
         )
         return cast("str", abi)
 
-    def get_base_address(self) -> EthAddress:
+    def _encode_multisend(self, calls: list[dict[str, object]]) -> str:
+        """Encode Safe MultiSend payload for a list of CALL operations."""
+        encoded_transactions = b""
+        for call in calls:
+            data = cast("str", call["data"]).removeprefix("0x")
+            encoded_transactions += (
+                b"\x00"
+                + bytes.fromhex(cast("str", call["to"]).removeprefix("0x"))
+                + int(cast("int", call.get("value", 0))).to_bytes(32, "big")
+                + (len(data) // 2).to_bytes(32, "big")
+                + bytes.fromhex(data)
+            )
+
+        abi = self.multisend.encode_abi(
+            abi_element_identifier="multiSend",
+            args=[encoded_transactions],
+        )
+        return cast("str", abi)
+
+    def get_base_wallet_address(self) -> EthAddress:
         """Get the base EOA address."""
         return cast("EthAddress", self.account.address)
 
-    def get_poly_proxy_address(self, address: EthAddress | None = None) -> EthAddress:
+    def get_base_address(self) -> EthAddress:
+        """Compatibility alias for the base EOA address."""
+        return self.get_base_wallet_address()
+
+    def get_poly_proxy_wallet_address(self, address: EthAddress | None = None) -> EthAddress:
         """Get the Polymarket proxy address."""
         address = address or self.account.address
         result = self.exchange.functions.getProxyWalletAddress(address).call()
         return cast("EthAddress", result)
 
-    def get_safe_proxy_address(self, address: EthAddress | None = None) -> EthAddress:
+    def get_safe_proxy_wallet_address(self, address: EthAddress | None = None) -> EthAddress:
         """Get the Safe proxy address."""
         address = address or self.account.address
         result = self.safe_proxy_factory.functions.computeProxyAddress(address).call()
         return cast("EthAddress", result)
 
+    def get_deposit_wallet_address(self) -> EthAddress:
+        """Get the expected deposit wallet address."""
+        return derive_deposit_wallet(
+            self.account.address,
+            self.deposit_wallet_factory_address,
+            self.deposit_wallet_implementation_address,
+        )
+
+    def get_expected_deposit_wallet(self) -> EthAddress:
+        """Compatibility alias for the expected deposit wallet address."""
+        return self.get_deposit_wallet_address()
+
     def detect_wallet_signature_type(
         self, address: EthAddress
-    ) -> Literal[0, 1, 2] | None:
+    ) -> Literal[0, 1, 2, 3] | None:
         """
         Detect wallet signature type from an address.
 
         Returns:
-            - 0 for EOA
+            - 0 for EOA / undeployed smart contract computed address
             - 1 for Polymarket proxy wallet
             - 2 for Safe/Gnosis proxy wallet
-            - None for other smart contracts / unknown wallet implementations
+            - 3 for Deposit wallet
+
 
         """
         code = (
@@ -475,6 +557,159 @@ class BaseWeb3Client(ABC):
             metadata="auto_redeem_disable",
         )
 
+    def set_collateral_approval(self, spender: ChecksumAddress) -> TransactionReceipt:
+        """Set approval for spender on pUSD collateral."""
+        data = self._encode_erc20_approve(address=spender)
+        return self._execute(
+            self.pusd_address,
+            data,
+            "Collateral Approval",
+            metadata="collateral_approval",
+        )
+
+    def set_conditional_tokens_approval(
+        self, spender: ChecksumAddress
+    ) -> TransactionReceipt:
+        """Set approval for spender on conditional tokens."""
+        data = self._encode_condition_tokens_approve(address=spender)
+        return self._execute(
+            self.conditional_tokens_address,
+            data,
+            "Conditional Tokens Approval",
+            metadata="conditional_tokens_approval",
+        )
+
+    def _approval_calls(self, approving: bool = True) -> list[dict[str, object]]:
+        erc20_approval_amount = int(MAX_INT, base=16) if approving else 0
+        action = "Approving" if approving else "Revoking"
+        pusd_spenders = {
+            self.conditional_tokens_address: "ConditionalTokens",
+            self.ctf_collateral_adapter_address: "CtfCollateralAdapter",
+            self.neg_risk_ctf_collateral_adapter: "NegRiskCtfCollateralAdapter",
+            self.exchange_address: "CTFExchange V2",
+            self.neg_risk_exchange_address: "NegRiskCtfExchange V2",
+            self.neg_risk_adapter_address: "NegRiskAdapter",
+        }
+        ctf_spenders = {
+            self.ctf_collateral_adapter_address: "CtfCollateralAdapter",
+            self.neg_risk_ctf_collateral_adapter: "NegRiskCtfCollateralAdapter",
+            self.exchange_address: "CTFExchange V2",
+            self.neg_risk_exchange_address: "NegRiskCtfExchange V2",
+            self.neg_risk_adapter_address: "NegRiskAdapter",
+        }
+
+        calls: list[dict[str, object]] = []
+        for spender, name in pusd_spenders.items():
+            print(f"{action} {name} as spender on pUSD")
+            calls.append(
+                {
+                    "to": self.pusd_address,
+                    "data": self._encode_erc20_approve(
+                        address=spender,
+                        amount=erc20_approval_amount,
+                    ),
+                }
+            )
+
+        print(f"{action} CollateralOnramp as spender on USDC.e")
+        calls.append(
+            {
+                "to": self.usdc_e_address,
+                "data": self._encode_erc20_approve(
+                    self.collateral_onramp_address,
+                    amount=erc20_approval_amount,
+                ),
+            }
+        )
+
+        for spender, name in ctf_spenders.items():
+            print(f"{action} {name} as spender on ConditionalTokens")
+            calls.append(
+                {
+                    "to": self.conditional_tokens_address,
+                    "data": self._encode_condition_tokens_approve(
+                        address=spender,
+                        approved=approving,
+                    ),
+                }
+            )
+        return calls
+
+    def _execute_calls(
+        self,
+        calls: list[dict[str, object]],
+        operation_name: str,
+        metadata: str | None = None,
+    ) -> list[TransactionReceipt]:
+        """Execute calls sequentially by default."""
+        return [
+            self._execute(
+                cast("ChecksumAddress", call["to"]),
+                cast("str", call["data"]),
+                operation_name,
+                metadata=metadata,
+            )
+            for call in calls
+        ]
+
+    def set_all_approvals(self) -> list[TransactionReceipt]:
+        """Set all necessary approvals."""
+        receipts = self._execute_calls(
+            self._approval_calls(),
+            "Set All Approvals",
+            metadata="set_all_approvals",
+        )
+        print("All approvals set!")
+        return receipts
+
+    def set_all_disapprovals(self) -> list[TransactionReceipt]:
+        """Revoke all approvals managed by set_all_approvals."""
+        receipts = self._execute_calls(
+            self._approval_calls(approving=False),
+            "Set All Disapprovals",
+            metadata="set_all_disapprovals",
+        )
+        print("All approvals revoked!")
+        return receipts
+
+    def transfer_pusd(self, recipient: EthAddress, amount: float) -> TransactionReceipt:
+        """Transfer pUSD to recipient."""
+        balance = self.get_pusd_balance(address=self.address)
+        if balance < amount:
+            msg = f"Insufficient pUSD balance: {balance} < {amount}"
+            raise ValueError(msg)
+
+        amount_int = int(amount * 1e6)
+        data = self._encode_transfer_pusd(
+            self.w3.to_checksum_address(recipient), amount_int
+        )
+        return self._execute(
+            self.pusd_address,
+            data,
+            "pUSD Transfer",
+            metadata="pusd_transfer",
+        )
+
+    def transfer_token(
+        self, token_id: str, recipient: EthAddress, amount: float
+    ) -> TransactionReceipt:
+        """Transfer conditional token to recipient."""
+        balance = self.get_token_balance(token_id=token_id, address=self.address)
+        if balance < amount:
+            msg = f"Insufficient token balance: {balance} < {amount}"
+            raise ValueError(msg)
+
+        amount_int = int(amount * 1e6)
+        data = self._encode_transfer_token(
+            token_id, self.w3.to_checksum_address(recipient), amount_int
+        )
+        return self._execute(
+            self.conditional_tokens_address,
+            data,
+            "Token Transfer",
+            metadata="token_transfer",
+        )
+
 
 class PolymarketWeb3Client(BaseWeb3Client):
     """
@@ -489,14 +724,13 @@ class PolymarketWeb3Client(BaseWeb3Client):
     def __init__(
         self,
         private_key: HexStr,
-        signature_type: Literal[0, 1, 2] = 1,
+        signature_type: Literal[0, 1, 2],
         chain_id: Literal[137, 80002] = POLYGON,
         rpc_url: str = "https://tenderly.rpc.polygon.community",
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
     ):
         super().__init__(
-            private_key, signature_type,
-            chain_id=chain_id, rpc_url=rpc_url, proxy=proxy
+            private_key, signature_type, chain_id=chain_id, rpc_url=rpc_url, proxy=proxy
         )
 
     def _execute(
@@ -557,35 +791,46 @@ class PolymarketWeb3Client(BaseWeb3Client):
         self, to: ChecksumAddress, data: str, base_transaction: TxParams
     ) -> TxParams:
         """Build transaction for Poly proxy wallet."""
-        proxy_txn = {
+        proxy_txn: dict[str, object] = {
             "typeCode": 1,
             "to": to,
             "value": 0,
             "data": data,
         }
 
+        return self._build_proxy_batch_transaction([proxy_txn], base_transaction)
+
+    def _build_proxy_batch_transaction(
+        self, proxy_txns: list[dict[str, object]], base_transaction: TxParams
+    ) -> TxParams:
+        """Build transaction for one or more Poly proxy wallet calls."""
+        encoded_txn = self._encode_proxy_calls(proxy_txns)
         estimation_txn: TxParams = {
-            "from": self.address,
-            "to": to,
-            "data": HexStr(data),
+            "from": self.account.address,
+            "to": self.proxy_factory_address,
+            "data": HexStr(encoded_txn),
         }
         estimated = self.w3.eth.estimate_gas(estimation_txn)
-        base_transaction["gas"] = int(estimated * 1.05) + 100000
+        base_transaction["gas"] = int(estimated * 1.05)
 
-        txn_data = self.proxy_factory.functions.proxy([proxy_txn]).build_transaction(
+        txn_data = self.proxy_factory.functions.proxy(proxy_txns).build_transaction(
             transaction=base_transaction
         )
         return txn_data
 
     def _build_safe_transaction(
-        self, to: ChecksumAddress, data: str, base_transaction: TxParams
+        self,
+        to: ChecksumAddress,
+        data: str,
+        base_transaction: TxParams,
+        operation: int = 0,
     ) -> TxParams:
         """Build transaction for Safe wallet."""
         safe_nonce = self.safe.functions.nonce().call()
         safe_txn: SafeTxn = {
             "to": to,
             "data": data,
-            "operation": 0,
+            "operation": operation,
             "value": 0,
         }
         packed_sig = get_packed_signature(
@@ -596,14 +841,6 @@ class PolymarketWeb3Client(BaseWeb3Client):
                 safe_nonce,
             )
         )
-
-        estimation_txn: TxParams = {
-            "from": self.address,
-            "to": to,
-            "data": HexStr(data),
-        }
-        estimated = self.w3.eth.estimate_gas(estimation_txn)
-        base_transaction["gas"] = int(estimated * 1.05) + 100000
 
         txn_data = self.safe.functions.execTransaction(
             safe_txn["to"],
@@ -618,7 +855,50 @@ class PolymarketWeb3Client(BaseWeb3Client):
             packed_sig,
         ).build_transaction(transaction=base_transaction)
 
+        estimated = self.w3.eth.estimate_gas(
+            cast("TxParams", {k: v for k, v in txn_data.items() if k != "gas"})
+        )
+        txn_data["gas"] = int(estimated * 1.05) + 100000
+
         return txn_data
+
+    def _execute_calls(
+        self,
+        calls: list[dict[str, object]],
+        operation_name: str,
+        metadata: str | None = None,
+    ) -> list[TransactionReceipt]:
+        """Execute a batch of calls when the wallet type supports batching."""
+        base_transaction = self._build_base_transaction()
+
+        match self.signature_type:
+            case 0:
+                return super()._execute_calls(calls, operation_name, metadata)
+            case 1:
+                proxy_txns = [
+                    {
+                        "typeCode": 1,
+                        "to": call["to"],
+                        "value": call.get("value", 0),
+                        "data": call["data"],
+                    }
+                    for call in calls
+                ]
+                txn_data = self._build_proxy_batch_transaction(
+                    proxy_txns, base_transaction
+                )
+            case 2:
+                txn_data = self._build_safe_transaction(
+                    self.multisend_address,
+                    self._encode_multisend(calls),
+                    base_transaction,
+                    operation=1,
+                )
+            case _:
+                msg = f"Invalid signature_type: {self.signature_type}"
+                raise ValueError(msg)
+
+        return [self._execute_transaction(txn_data, operation_name)]
 
     def _execute_transaction(
         self, txn_data: TxParams, operation_name: str
@@ -644,100 +924,14 @@ class PolymarketWeb3Client(BaseWeb3Client):
 
         return receipt
 
-    def set_collateral_approval(self, spender: ChecksumAddress) -> TransactionReceipt:
-        """Set approval for spender on pUSD collateral."""
-        to = self.pusd_address
-        data = self._encode_pusd_approve(address=spender)
-        return self._execute(to, data, "Collateral Approval")
-
-    def set_conditional_tokens_approval(
-        self, spender: ChecksumAddress
-    ) -> TransactionReceipt:
-        """Set approval for spender on conditional tokens."""
-        to = self.conditional_tokens_address
-        data = self._encode_condition_tokens_approve(address=spender)
-        return self._execute(to, data, "Conditional Tokens Approval")
-
-    def set_all_approvals(self) -> list[TransactionReceipt]:
-        """Set all necessary approvals."""
-        receipts = []
-        print("Approving ConditionalTokens as spender on pUSD")
-        receipts.append(
-            self.set_collateral_approval(spender=self.conditional_tokens_address)
-        )
-        print("Approving CtfCollateralAdapter as spender on pUSD")
-        receipts.append(
-            self.set_collateral_approval(spender=self.ctf_collateral_adapter_address)
-        )
-        print("Approving CTFExchange V2 as spender on pUSD")
-        receipts.append(self.set_collateral_approval(spender=self.exchange_address))
-        print("Approving NegRiskCtfExchange V2 as spender on pUSD")
-        receipts.append(
-            self.set_collateral_approval(spender=self.neg_risk_exchange_address)
-        )
-        print("Approving NegRiskAdapter as spender on pUSD")
-        receipts.append(
-            self.set_collateral_approval(spender=self.neg_risk_adapter_address)
-        )
-        print("Approving CTFExchange V2 as spender on ConditionalTokens")
-        receipts.append(
-            self.set_conditional_tokens_approval(spender=self.exchange_address)
-        )
-        print("Approving NegRiskCtfExchange V2 as spender on ConditionalTokens")
-        receipts.append(
-            self.set_conditional_tokens_approval(spender=self.neg_risk_exchange_address)
-        )
-        print("Approving NegRiskAdapter as spender on ConditionalTokens")
-        receipts.append(
-            self.set_conditional_tokens_approval(spender=self.neg_risk_adapter_address)
-        )
-        print("Approving CtfCollateralAdapter as spender on ConditionalTokens")
-        receipts.append(
-            self.set_conditional_tokens_approval(
-                spender=self.ctf_collateral_adapter_address
-            )
-        )
-        print("All approvals set!")
-        return receipts
-
-    def transfer_pusd(self, recipient: EthAddress, amount: float) -> TransactionReceipt:
-        """Transfer pUSD to recipient."""
-        balance = self.get_pusd_balance(address=self.address)
-        if balance < amount:
-            msg = f"Insufficient pUSD balance: {balance} < {amount}"
-            raise ValueError(msg)
-
-        amount_int = int(amount * 1e6)
-        to = self.pusd_address
-        data = self._encode_transfer_pusd(
-            self.w3.to_checksum_address(recipient), amount_int
-        )
-        return self._execute(to, data, "pUSD Transfer")
-
-    def transfer_token(
-        self, token_id: str, recipient: EthAddress, amount: float
-    ) -> TransactionReceipt:
-        """Transfer conditional token to recipient."""
-        balance = self.get_token_balance(token_id=token_id, address=self.address)
-        if balance < amount:
-            msg = f"Insufficient token balance: {balance} < {amount}"
-            raise ValueError(msg)
-
-        amount_int = int(amount * 1e6)
-        to = self.conditional_tokens_address
-        data = self._encode_transfer_token(
-            token_id, self.w3.to_checksum_address(recipient), amount_int
-        )
-        return self._execute(to, data, "Token Transfer")
-
-    def deploy_safe(self) -> TransactionReceipt:
+    def deploy_safe_wallet(self) -> TransactionReceipt:
         """Deploy a Safe wallet."""
-        safe_address = self.get_safe_proxy_address()
+        safe_address = self.get_safe_proxy_wallet_address()
         if self.w3.eth.get_code(self.w3.to_checksum_address(safe_address)) != b"":
             msg = f"Safe already deployed at {safe_address}"
             raise SafeAlreadyDeployedError(msg)
 
-        sig = create_safe_create_signature(account=self.account, chain_id=POLYGON)
+        sig = create_safe_create_signature(account=self.account, chain_id=self.chain_id)
         split_sig = split_signature(sig)
 
         base_transaction = self._build_base_transaction()
@@ -754,23 +948,32 @@ class PolymarketWeb3Client(BaseWeb3Client):
 class PolymarketGaslessWeb3Client(BaseWeb3Client):
     """Polymarket Web3 client for gasless transactions via relay."""
 
+    DEFAULT_DEPOSIT_WALLET_DEADLINE_SECONDS = 240
+
     def __init__(
         self,
         private_key: HexStr,
-        signature_type: Literal[1, 2] = 1,
+        signature_type: Literal[1, 2, 3],
         *,
-        relayer_api_key: str,
+        relayer_api_key: str | None = None,
+        builder_creds: ApiCreds | None = None,
         chain_id: Literal[137, 80002] = POLYGON,
         rpc_url: str = "https://tenderly.rpc.polygon.community",
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
     ):
-        if signature_type not in {1, 2}:
-            msg = "PolymarketGaslessWeb3Client only supports signature_type=1 (Poly proxy wallets) and signature_type=2 (Safe wallets)."
+        if signature_type not in {1, 2, 3}:
+            msg = (
+                "PolymarketGaslessWeb3Client only supports signature_type=1 "
+                "(Poly proxy wallets), signature_type=2 (Safe wallets), and "
+                "signature_type=3 (Deposit wallets)."
+            )
+            raise ValueError(msg)
+        if relayer_api_key is None and builder_creds is None:
+            msg = "PolymarketGaslessWeb3Client requires either relayer_api_key or builder_creds."
             raise ValueError(msg)
 
         super().__init__(
-            private_key, signature_type,
-            chain_id=chain_id, rpc_url=rpc_url, proxy=proxy
+            private_key, signature_type, chain_id=chain_id, rpc_url=rpc_url, proxy=proxy
         )
 
         # Setup for gasless transactions
@@ -779,6 +982,7 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
         self.relay_hub = "0xD216153c06E857cD7f72665E0aF1d7D82172F494"
         self.relay_address = "0x7db63fe6d62eb73fb01f8009416f4c2bb4fbda6a"
         self.relayer_api_key = relayer_api_key
+        self.builder_creds = builder_creds
 
     def _execute(
         self,
@@ -793,16 +997,23 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
                 body = self._build_proxy_relay_transaction(to, data, metadata or "")
             case 2:
                 body = self._build_safe_relay_transaction(to, data, metadata or "")
+            case 3:
+                body = self._build_deposit_relay_transaction(to, data, metadata or "")
             case _:
                 msg = f"Invalid signature_type: {self.signature_type}"
                 raise ValueError(msg)
 
-        headers = create_relayer_headers(self.relayer_api_key, self.get_base_address())
+        return self._submit_relay_transaction(body, operation_name)
 
+    def _submit_relay_transaction(
+        self, body: dict[str, Any], operation_name: str
+    ) -> TransactionReceipt:
+        """Submit a prepared relay transaction body and wait for a receipt."""
         url = f"{self.relay_url}/submit"
-        response = self.client.post(
-            url, headers=headers, content=dumps(body).encode("utf-8")
-        )
+        content = dumps(body).encode("utf-8")
+        headers = self._create_relay_headers("/submit", "POST", content.decode())
+
+        response = self.client.post(url, headers=headers, content=content)
         response.raise_for_status()
 
         gasless_response = response.json()
@@ -813,10 +1024,11 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
         print(f"Transaction ID: {gasless_response.get('transactionID', 'N/A')}")
         print(f"State: {gasless_response.get('state', 'N/A')}")
 
-        # Wait for confirmation and return receipt
         tx_hash = gasless_response.get("transactionHash")
         if tx_hash:
-            receipt_dict = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            receipt_dict = self.w3.eth.wait_for_transaction_receipt(
+                cast("HexStr", tx_hash)
+            )
             receipt = TransactionReceipt.model_validate(receipt_dict)
 
             print(
@@ -826,40 +1038,261 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
             )
 
             return receipt
+
+        transaction_id = gasless_response.get("transactionID")
+        if transaction_id:
+            tx_hash = self._wait_for_relay_transaction_hash(str(transaction_id))
+            if tx_hash:
+                receipt_dict = self.w3.eth.wait_for_transaction_receipt(
+                    cast("HexStr", tx_hash)
+                )
+                receipt = TransactionReceipt.model_validate(receipt_dict)
+
+                print(
+                    f"{operation_name} succeeded"
+                    if receipt.status == 1
+                    else f"{operation_name} failed"
+                )
+
+                return receipt
+
         msg = f"No transaction hash in response: {gasless_response}"
         raise ValueError(msg)
 
-    def _get_relay_nonce(self, wallet_type: Literal["PROXY", "SAFE"]) -> int:
+    def _create_relay_headers(
+        self, request_path: str, method: Literal["POST"], body: str
+    ) -> dict[str, str]:
+        """Create headers for either relayer_api_key or builder_creds."""
+        if self.relayer_api_key is not None:
+            return create_relayer_headers(
+                self.relayer_api_key,
+                self.get_base_wallet_address(),
+            )
+
+        if self.builder_creds is None:
+            msg = "Missing relayer_api_key. Provide relayer_api_key or builder_creds."
+            raise ValueError(msg)
+
+        return create_level_2_headers(
+            self.signer,
+            self.builder_creds,
+            RequestArgs(method=method, request_path=request_path, body=body),
+            builder=True,
+        )
+
+    def _wait_for_relay_transaction_hash(self, transaction_id: str) -> str | None:
+        """Poll the relayer until it attaches an on-chain transaction hash."""
+        url = f"{self.relay_url}/transaction"
+        for _ in range(100):
+            response = self.client.get(url, params={"id": transaction_id})
+            response.raise_for_status()
+            transactions = response.json()
+            transaction = transactions[0] if transactions else {}
+            state = transaction.get("state")
+
+            if state == "STATE_FAILED":
+                msg = f"Gasless transaction failed in relayer: {transaction}"
+                raise ValueError(msg)
+
+            tx_hash = transaction.get("transactionHash")
+            if tx_hash:
+                return cast("str", tx_hash)
+
+            sleep(2)
+
+        return None
+
+    def _execute_calls(
+        self,
+        calls: list[dict[str, Any]],
+        operation_name: str,
+        metadata: str | None = None,
+    ) -> list[TransactionReceipt]:
+        """Execute a batch of calls through the gasless relay."""
+        match self.signature_type:
+            case 1:
+                proxy_txns = [
+                    {
+                        "typeCode": 1,
+                        "to": call["to"],
+                        "value": call.get("value", 0),
+                        "data": call["data"],
+                    }
+                    for call in calls
+                ]
+                body = self._build_proxy_relay_transactions(
+                    proxy_txns, metadata or "batch"
+                )
+            case 2:
+                body = self._build_safe_relay_transaction(
+                    self.multisend_address,
+                    self._encode_multisend(calls),
+                    metadata or "batch",
+                    operation=1,
+                )
+            case 3:
+                body = self._build_deposit_relay_transactions(
+                    [
+                        {
+                            "target": call["to"],
+                            "value": str(call.get("value", 0)),
+                            "data": call["data"],
+                        }
+                        for call in calls
+                    ],
+                    metadata or "batch",
+                )
+            case _:
+                msg = f"Invalid signature_type: {self.signature_type}"
+                raise ValueError(msg)
+
+        return [self._submit_relay_transaction(body, operation_name)]
+
+    def _get_relay_nonce(self, wallet_type: Literal["PROXY", "SAFE", "WALLET"]) -> int:
         """Get nonce from relay for Safe wallet."""
         url = f"{self.relay_url}/nonce"
         params = {
-            "address": self.get_base_address(),
+            "address": self.get_base_wallet_address(),
             "type": wallet_type,
         }
         response = self.client.get(url, params=params)
         response.raise_for_status()
         return int(response.json()["nonce"])
 
+    def _build_deposit_wallet_calls(
+        self, calls: list[DepositWalletCall | dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Normalize Deposit wallet calls into relay payload dicts."""
+        normalized_calls: list[dict[str, Any]] = []
+        for call in calls:
+            if isinstance(call, DepositWalletCall):
+                normalized_calls.append(call.to_dict())
+                continue
+
+            normalized_calls.append(
+                {
+                    "target": call["target"],
+                    "value": str(call.get("value", "0")),
+                    "data": call["data"],
+                }
+            )
+        return normalized_calls
+
+    def _build_deposit_wallet_signature(
+        self,
+        wallet_address: str,
+        nonce: str,
+        deadline: str,
+        calls: list[dict[str, Any]],
+    ) -> str:
+        """Build the Deposit wallet batch signature."""
+        typed_calls = [
+            {
+                "target": call["target"],
+                "value": int(call.get("value", 0)),
+                "data": call["data"],
+            }
+            for call in calls
+        ]
+
+        full_message = {
+            "primaryType": "Batch",
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Call": [
+                    {"name": "target", "type": "address"},
+                    {"name": "value", "type": "uint256"},
+                    {"name": "data", "type": "bytes"},
+                ],
+                "Batch": [
+                    {"name": "wallet", "type": "address"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "deadline", "type": "uint256"},
+                    {"name": "calls", "type": "Call[]"},
+                ],
+            },
+            "domain": {
+                "name": DEPOSIT_WALLET_DOMAIN_NAME,
+                "version": DEPOSIT_WALLET_DOMAIN_VERSION,
+                "chainId": self.chain_id,
+                "verifyingContract": wallet_address,
+            },
+            "message": {
+                "wallet": wallet_address,
+                "nonce": int(nonce),
+                "deadline": int(deadline),
+                "calls": typed_calls,
+            },
+        }
+        return self.signer.sign_typed_data(full_message)
+
+    def _build_deposit_relay_transactions(
+        self, calls: list[DepositWalletCall | dict[str, Any]], metadata: str
+    ) -> dict[str, Any]:
+        """Build Deposit wallet relay transaction body for one or more calls."""
+        wallet_address = self.get_expected_deposit_wallet()
+        wallet_nonce = str(self._get_relay_nonce(wallet_type="WALLET"))
+        deadline = str(
+            int(time()) + self.DEFAULT_DEPOSIT_WALLET_DEADLINE_SECONDS
+        )
+        normalized_calls = self._build_deposit_wallet_calls(calls)
+        signature = self._build_deposit_wallet_signature(
+            wallet_address=str(wallet_address),
+            nonce=wallet_nonce,
+            deadline=deadline,
+            calls=normalized_calls,
+        )
+
+        return {
+            "from": self.get_base_wallet_address(),
+            "metadata": metadata,
+            "nonce": wallet_nonce,
+            "signature": signature,
+            "to": self.deposit_wallet_factory_address,
+            "type": "WALLET",
+            "depositWalletParams": {
+                "depositWallet": wallet_address,
+                "deadline": deadline,
+                "calls": normalized_calls,
+            },
+        }
+
+    def _build_deposit_relay_transaction(
+        self, to: ChecksumAddress, data: str, metadata: str
+    ) -> dict[str, Any]:
+        """Build Deposit wallet relay body for a single call."""
+        return self._build_deposit_relay_transactions(
+            [{"target": to, "value": "0", "data": data}],
+            metadata,
+        )
+
     def _build_proxy_relay_transaction(
         self, to: ChecksumAddress, data: str, metadata: str
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         """Build Proxy relay transaction body."""
+        return self._build_proxy_relay_transactions(
+            [{"typeCode": 1, "to": to, "value": 0, "data": data}],
+            metadata,
+        )
+
+    def _build_proxy_relay_transactions(
+        self, proxy_txns: list[dict[str, object]], metadata: str
+    ) -> dict[str, Any]:
+        """Build Proxy relay transaction body for one or more calls."""
         proxy_nonce = self._get_relay_nonce(wallet_type="PROXY")
         gas_price = "0"
         relayer_fee = "0"
 
-        proxy_txn: dict[str, object] = {
-            "typeCode": 1,
-            "to": to,
-            "value": 0,
-            "data": data,
-        }
-
-        encoded_txn = self._encode_proxy(proxy_txn)
+        encoded_txn = self._encode_proxy_calls(proxy_txns)
 
         try:
             estimation_txn: TxParams = {
-                "from": self.get_base_address(),
+                "from": self.get_base_wallet_address(),
                 "to": self.proxy_factory_address,
                 "data": HexStr(encoded_txn),
             }
@@ -872,7 +1305,7 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
             gas_limit = str(10_000_000)
 
         struct = create_proxy_struct(
-            from_address=self.get_base_address(),
+            from_address=self.get_base_wallet_address(),
             to=self.proxy_factory_address,
             data=encoded_txn,
             tx_fee=relayer_fee,
@@ -891,10 +1324,10 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
 
         return {
             "data": encoded_txn,
-            "from": self.get_base_address(),
+            "from": self.get_base_wallet_address(),
             "metadata": metadata,
             "nonce": str(proxy_nonce),
-            "proxyWallet": self.get_poly_proxy_address(),
+            "proxyWallet": self.get_poly_proxy_wallet_address(),
             "signature": "0x" + signature,
             "signatureParams": {
                 "gasPrice": gas_price,
@@ -908,15 +1341,15 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
         }
 
     def _build_safe_relay_transaction(
-        self, to: ChecksumAddress, data: str, metadata: str
-    ) -> dict[str, object]:
+        self, to: ChecksumAddress, data: str, metadata: str, operation: int = 0
+    ) -> dict[str, Any]:
         """Build Safe relay transaction body."""
         safe_nonce = self._get_relay_nonce(wallet_type="SAFE")
 
         safe_txn: SafeTxn = {
             "to": to,
             "data": data,
-            "operation": 0,
+            "operation": operation,
             "value": 0,
         }
 
@@ -935,19 +1368,87 @@ class PolymarketGaslessWeb3Client(BaseWeb3Client):
 
         return {
             "data": safe_txn["data"],
-            "from": self.get_base_address(),
+            "from": self.get_base_wallet_address(),
             "metadata": metadata,
             "nonce": str(safe_nonce),
-            "proxyWallet": self.get_safe_proxy_address(),
+            "proxyWallet": self.get_safe_proxy_wallet_address(),
             "signature": "0x" + signature,
             "signatureParams": {
                 "baseGas": "0",
                 "gasPrice": "0",
                 "gasToken": ADDRESS_ZERO,
-                "operation": "0",
+                "operation": str(operation),
                 "refundReceiver": ADDRESS_ZERO,
                 "safeTxnGas": "0",
             },
             "to": to,
             "type": "SAFE",
         }
+
+    def _build_safe_create_relay_transaction(self) -> dict[str, Any]:
+        """Build Safe deployment relay transaction body."""
+        signature = create_safe_create_signature(
+            account=self.account,
+            chain_id=self.chain_id,
+        )
+
+        return {
+            "data": "0x",
+            "from": self.get_base_wallet_address(),
+            "proxyWallet": self.get_safe_proxy_wallet_address(),
+            "signature": signature if signature.startswith("0x") else f"0x{signature}",
+            "signatureParams": {
+                "paymentToken": ADDRESS_ZERO,
+                "payment": "0",
+                "paymentReceiver": ADDRESS_ZERO,
+            },
+            "to": self.safe_proxy_factory_address,
+            "type": "SAFE-CREATE",
+        }
+
+    def execute_deposit_wallet_batch(
+        self,
+        calls: list[DepositWalletCall | dict[str, Any]],
+        *,
+        metadata: str = "batch",
+    ) -> list[TransactionReceipt]:
+        """Execute an arbitrary batch through the deposit-wallet relay."""
+        body = self._build_deposit_relay_transactions(calls, metadata)
+        return [self._submit_relay_transaction(body, "Deposit Wallet Batch")]
+
+    def deploy_safe_wallet(self) -> TransactionReceipt:
+        """Deploy a Safe wallet through the gasless relayer."""
+        if self.signature_type != 2:
+            msg = "Safe deployment is only available for signature_type=2. Proxy wallets auto-deploy on first transaction."
+            raise ValueError(msg)
+
+        safe_address = self.get_safe_proxy_wallet_address()
+        if self.w3.eth.get_code(self.w3.to_checksum_address(safe_address)) != b"":
+            msg = f"Safe already deployed at {safe_address}"
+            raise SafeAlreadyDeployedError(msg)
+
+        return self._submit_relay_transaction(
+            self._build_safe_create_relay_transaction(),
+            "Gnosis Safe Deployment",
+        )
+
+    def deploy_deposit_wallet(self) -> TransactionReceipt:
+        """Deploy a deposit wallet through the gasless relayer."""
+        if self.signature_type != 3:
+            msg = (
+                "Deposit wallet deployment is only available for "
+                "signature_type=3."
+            )
+            raise ValueError(msg)
+
+        deposit_wallet_address = self.get_expected_deposit_wallet()
+        if self.w3.eth.get_code(self.w3.to_checksum_address(deposit_wallet_address)) != b"":
+            msg = f"Deposit wallet already deployed at {deposit_wallet_address}"
+            raise ValueError(msg)
+
+        body = {
+            "from": self.get_base_wallet_address(),
+            "to": self.deposit_wallet_factory_address,
+            "type": "WALLET-CREATE",
+        }
+        return self._submit_relay_transaction(body, "Deposit Wallet Deployment")

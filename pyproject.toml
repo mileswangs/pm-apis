@@ -15,7 +15,6 @@ dependencies = [
     "poly-eip712-structs>=0.0.1",
     "httpx[http2,socks]>=0.28.1",
     "web3>=7.0",
-    "lomond>=0.3.3",
     "orjson>=3.10.0",
     "websockets>=13.1",
     "gql[httpx]>=4.0.0",

@@ -499,27 +499,6 @@ class PolymarketReadOnlyClobClient:
         self.client.close()
         await self.async_client.aclose()
 
-def _detect_wallet_signature_type(
-    address: EthAddress,
-) -> Literal[0, 1, 2] | None:
-    from web3 import Web3
-
-    w3 = Web3(Web3.HTTPProvider("https://tenderly.rpc.polygon.community"))
-    code = (
-        w3.eth.get_code(w3.to_checksum_address(address))
-        .hex()
-        .removeprefix("0x")
-        .lower()
-    )
-    signature_type = get_signature_type_from_runtime_code(code)
-    if signature_type is None:
-        msg = (
-            f"Could not auto-detect signature_type for funder address {address}. "
-            "The address has an unknown contract runtime; provide signature_type explicitly."
-        )
-        raise ValueError(msg)
-    return signature_type
-
 
 class PolymarketClobClient(PolymarketReadOnlyClobClient):
     @staticmethod

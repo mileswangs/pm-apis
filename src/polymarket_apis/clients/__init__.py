@@ -22,10 +22,6 @@ if TYPE_CHECKING:
     from .websockets_client import (
         PolyWSS,
         PolyWSSMarket,
-        parse_live_data_event,
-        parse_market_event,
-        parse_sports_event,
-        parse_user_event,
     )
 
 __all__ = [
@@ -39,10 +35,6 @@ __all__ = [
     "PolyWSS",
     "PolyWSSMarket",
     "PolymarketWeb3Client",
-    "parse_live_data_event",
-    "parse_market_event",
-    "parse_sports_event",
-    "parse_user_event",
 ]
 
 _EXPORT_MAP = {
@@ -56,10 +48,6 @@ _EXPORT_MAP = {
     "PolyWSS": ".websockets_client",
     "PolyWSSMarket": ".websockets_client",
     "PolymarketWeb3Client": ".web3_client",
-    "parse_live_data_event": ".websockets_client",
-    "parse_market_event": ".websockets_client",
-    "parse_sports_event": ".websockets_client",
-    "parse_user_event": ".websockets_client",
 }
 
 

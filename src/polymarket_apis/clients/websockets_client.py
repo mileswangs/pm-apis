@@ -1,15 +1,11 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
-from json import JSONDecodeError
 import logging
-from typing import Any, Optional, cast
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Optional
 
-from lomond import WebSocket
-from lomond.events import Text
-from lomond.persist import persist
 import orjson
-from pydantic import BaseModel, ValidationError
 import websockets
+from pydantic import ValidationError
 
 from ..types.clob_types import ApiCreds
 from ..types.websockets_types import (
@@ -84,91 +80,6 @@ LIVE_DATA_EVENT_CLASSES: Mapping[str, type[LiveDataEvents]] = {
     "subscribe": AssetPriceSubscribeEvent,
     "update": AssetPriceUpdateEvent,
 }
-
-
-def parse_json(event: Text) -> object | None:
-    if not event.text or event.text.isspace():
-        return None
-    try:
-        return cast("object", event.json)
-    except JSONDecodeError:
-        logger.warning("Invalid json: %s", event.text)
-        return None
-
-
-def substitute_cls[T: BaseModel](cls: type[T], data: dict[str, Any]) -> T | None:
-    try:
-        return cls(**data)
-    except ValidationError:
-        logger.exception("Cannot initiate: %s with %s", cls, data)
-        return None
-
-
-def parse_event[T: BaseModel](
-    message: object,
-    classes: Mapping[str, type[T]],
-    event_type_field: str,
-) -> T | None:
-    if message is None:
-        return None
-    if not isinstance(message, dict):
-        logger.warning("Got %s instead of dict", message)
-        return None
-
-    typ_obj = message.get(event_type_field)
-    typ = typ_obj if isinstance(typ_obj, str) else None
-    if typ is None:
-        logger.warning(
-            "Missing or invalid event type field '%s' in message: %s",
-            event_type_field,
-            message,
-        )
-        return None
-
-    cls = classes.get(typ)
-    if cls is None:
-        logger.warning("Unknown event type: %s", typ)
-        return None
-
-    return substitute_cls(cls, message)
-
-
-def parse_market_event(text: Text) -> MarketEvents | list[OrderBookSummaryEvent] | None:
-    message = parse_json(text)
-    if isinstance(message, list):
-        result: list[OrderBookSummaryEvent] = []
-        for item in message:
-            if isinstance(item, dict):
-                obj = substitute_cls(OrderBookSummaryEvent, item)
-                if obj is not None:
-                    result.append(obj)
-        return result
-
-    return parse_event(message, MARKET_EVENT_CLASSES, "event_type")
-
-
-def parse_user_event(text: Text) -> UserEvents | None:
-    message = parse_json(text)
-
-    return parse_event(message, USER_EVENT_CLASSES, "event_type")
-
-
-def parse_live_data_event(text: Text) -> LiveDataEvents | None:
-    message = parse_json(text)
-
-    return parse_event(message, LIVE_DATA_EVENT_CLASSES, "type")
-
-
-def parse_sports_event(text: Text) -> SportsGameUpdate | None:
-    message = parse_json(text)
-
-    if message is None:
-        return None
-    if not isinstance(message, dict):
-        logger.warning("Got %s instead of dict", message)
-        return None
-
-    return substitute_cls(SportsGameUpdate, message)
 
 
 def _on_market_message(message):
@@ -261,28 +172,13 @@ def _on_live_data_message(message):
         )
 
 
-def _default_process_market_event(text: Text) -> None:
-    ev = parse_market_event(text)
-    if ev is not None:
-        print(ev, "\n")
-
-
-def _default_process_user_event(text: Text) -> None:
-    ev = parse_user_event(text)
-    if ev is not None:
-        print(ev, "\n")
-
-
-def _default_process_live_data_event(text: Text) -> None:
-    ev = parse_live_data_event(text)
-    if ev is not None:
-        print(ev, "\n")
-
-
-def _default_process_sports_event(text: Text) -> None:
-    ev = parse_sports_event(text)
-    if ev is not None:
-        print(ev, "\n")
+def _on_sports_message(message):
+    try:
+        logger.info("%s", SportsGameUpdate(**message))
+    except ValidationError as e:
+        logger.error(
+            "Sports message validation error: %s | message=%s", e.errors(), message
+        )
 
 
 class PolyWSSMarket:
@@ -517,14 +413,36 @@ class PolymarketWebsocketsClient:
                     reconnect_delay * 2, RECONNECT_BACKOFF_MAX_SECONDS
                 )
 
-    def sports_socket(
-        self, process_event: Callable[[Text], None] = _default_process_sports_event
-    ) -> None:
-        websocket = WebSocket(self.url_sports)
+    async def sports_socket(
+        self,
+        on_message: Callable[[Any], Awaitable[None]] = _on_sports_message,
+    ):
+        reconnect_delay = RECONNECT_BACKOFF_INITIAL_SECONDS
+        while True:
+            try:
+                logger.info("[Sports WS] 启动 WebSocket 连接...")
+                async with websockets.connect(
+                    self.url_sports, ping_interval=20, ping_timeout=10
+                ) as ws:
+                    logger.info("[Sports WS] 已连接")
+                    reconnect_delay = RECONNECT_BACKOFF_INITIAL_SECONDS
 
-        for event in persist(websocket):
-            if event.name == "text":
-                process_event(cast("Text", event))
+                    async for event in ws:
+                        try:
+                            message = orjson.loads(event)
+                            await on_message(message)
+                        except orjson.JSONDecodeError:
+                            logger.warning(
+                                "[Sports WS] JSON decode error, raw event: %s", event
+                            )
+
+            except (websockets.exceptions.ConnectionClosed, Exception) as e:
+                logger.error("[Sports WS] WebSocket 连接异常: %s", e)
+                logger.info("[Sports WS] %s 秒后尝试重连", reconnect_delay)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(
+                    reconnect_delay * 2, RECONNECT_BACKOFF_MAX_SECONDS
+                )
 
 
 PolyWSS = PolymarketWebsocketsClient

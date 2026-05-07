@@ -10,6 +10,10 @@ from ..types.gamma_types import Comment, Reaction
 # wss://ws-subscriptions-clob.polymarket.com/ws/market types
 
 
+def _local_timestamp() -> datetime:
+    return datetime.now().astimezone()
+
+
 class PriceChange(BaseModel):
     best_ask: float = Field(validation_alias=AliasChoices("ba", "best_ask"))
     best_bid: float = Field(validation_alias=AliasChoices("bb", "best_bid"))
@@ -26,6 +30,7 @@ class PriceChanges(BaseModel):
         validation_alias=AliasChoices("pc", "price_changes")
     )
     timestamp: datetime = Field(validation_alias=AliasChoices("t", "timestamp"))
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
 
 
 class TickSizeChange(BaseModel):
@@ -46,6 +51,7 @@ class LastTradePrice(BaseModel):
 
 
 class OrderBookSummaryEvent(OrderBookSummary):
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     event_type: Literal["book"]
 
 
@@ -55,11 +61,13 @@ class PriceChangeEvent(PriceChanges):
 
 class TickSizeChangeEvent(TickSizeChange):
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     event_type: Literal["tick_size_change"]
 
 
 class LastTradePriceEvent(LastTradePrice):
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     event_type: Literal["last_trade_price"]
 
 
@@ -70,6 +78,7 @@ class BestBidAskEvent(BaseModel):
     best_ask: float
     spread: float
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     event_type: Literal["best_bid_ask"]
 
 
@@ -91,6 +100,7 @@ class MarketEvent(BaseModel):
     outcomes: list[str]
     event_info: RelatedEvent = Field(alias="event_message")
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     tags: Optional[list[str]] = None
 
 
@@ -126,6 +136,7 @@ class OrderEvent(BaseModel):  # type: ignore[no-redef] # event_owner is the same
     created_at: datetime
     expiration: Optional[datetime] = None
     timestamp: Optional[datetime] = None  # time of event
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
 
     event_type: Optional[Literal["order"]] = None
     exchange_version: Optional[str] = None
@@ -161,6 +172,7 @@ class TradeEvent(BaseModel):  # type: ignore[no-redef] # event_owner is the same
     last_update: datetime  # time of last update to trade
     matchtime: Optional[datetime] = None  # time trade was matched
     timestamp: Optional[datetime] = None  # time of event
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
 
     event_type: Optional[Literal["trade"]] = None
     exchange_version: Optional[str] = None
@@ -188,6 +200,7 @@ class ActivityTrade(BaseModel):
     size: float  # Size of the trade
     slug: str  # Slug of the market
     timestamp: datetime  # Timestamp of the trade
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     title: str  # Title of the event
     transaction_hash: str = Field(alias="transactionHash")  # Hash of the transaction
     proxy_wallet: str = Field(alias="proxyWallet")  # Address of the user proxy wallet
@@ -289,6 +302,7 @@ class LiveDataClobMarket(BaseModel):
 class ActivityTradeEvent(BaseModel):
     payload: ActivityTrade
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["trades"]
     topic: Literal["activity"]
 
@@ -296,6 +310,7 @@ class ActivityTradeEvent(BaseModel):
 class ActivityOrderMatchEvent(BaseModel):
     payload: ActivityTrade
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["orders_matched"]
     topic: Literal["activity"]
 
@@ -303,6 +318,7 @@ class ActivityOrderMatchEvent(BaseModel):
 class CommentEvent(BaseModel):
     payload: Comment
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["comment_created", "comment_removed"]
     topic: Literal["comments"]
 
@@ -310,6 +326,7 @@ class CommentEvent(BaseModel):
 class ReactionEvent(BaseModel):
     payload: Reaction
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["reaction_created", "reaction_removed"]
     topic: Literal["comments"]
 
@@ -317,6 +334,7 @@ class ReactionEvent(BaseModel):
 class RequestEvent(BaseModel):
     payload: Request
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal[
         "request_created", "request_edited", "request_canceled", "request_expired"
     ]
@@ -326,6 +344,7 @@ class RequestEvent(BaseModel):
 class QuoteEvent(BaseModel):
     payload: Quote
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["quote_created", "quote_edited", "quote_canceled", "quote_expired"]
     topic: Literal["rfq"]
 
@@ -333,6 +352,7 @@ class QuoteEvent(BaseModel):
 class AssetPriceUpdateEvent(BaseModel):
     payload: AssetPriceUpdate
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["update"]
     topic: Literal["crypto_prices", "crypto_prices_chainlink", "equity_prices"]
@@ -341,6 +361,7 @@ class AssetPriceUpdateEvent(BaseModel):
 class AssetPriceSubscribeEvent(BaseModel):
     payload: AssetPriceSubscribe
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     type: Literal["subscribe"]
     topic: Literal["crypto_prices", "crypto_prices_chainlink", "equity_prices"]
 
@@ -352,6 +373,7 @@ CryptoPriceSubscribeEvent = AssetPriceSubscribeEvent
 class LiveDataOrderBookSummaryEvent(BaseModel):
     payload: list[AggOrderBookSummary] | AggOrderBookSummary
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["agg_orderbook"]
     topic: Literal["clob_market"]
@@ -360,6 +382,7 @@ class LiveDataOrderBookSummaryEvent(BaseModel):
 class LiveDataPriceChangeEvent(BaseModel):
     payload: PriceChanges
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["price_change"]
     topic: Literal["clob_market"]
@@ -368,6 +391,7 @@ class LiveDataPriceChangeEvent(BaseModel):
 class LiveDataLastTradePriceEvent(BaseModel):
     payload: LastTradePrice
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["last_trade_price"]
     topic: Literal["clob_market"]
@@ -376,6 +400,7 @@ class LiveDataLastTradePriceEvent(BaseModel):
 class LiveDataTickSizeChangeEvent(BaseModel):
     payload: TickSizeChange
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["tick_size_change"]
     topic: Literal["clob_market"]
@@ -384,6 +409,7 @@ class LiveDataTickSizeChangeEvent(BaseModel):
 class MarketStatusChangeEvent(BaseModel):
     payload: LiveDataClobMarket
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["market_created", "market_resolved"]
     topic: Literal["clob_market"]
@@ -392,6 +418,7 @@ class MarketStatusChangeEvent(BaseModel):
 class LiveDataOrderEvent(BaseModel):
     payload: OrderEvent
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["order"]
     topic: Literal["clob_user"]
@@ -400,6 +427,7 @@ class LiveDataOrderEvent(BaseModel):
 class LiveDataTradeEvent(BaseModel):
     payload: TradeEvent
     timestamp: datetime
+    local_timestamp: datetime = Field(default_factory=_local_timestamp)
     connection_id: str
     type: Literal["trade"]
     topic: Literal["clob_user"]

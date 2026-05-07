@@ -1,11 +1,11 @@
 [project]
-name = "polymarket-apis"
-version = "2.1.0"
+name = "pm-apis"
+version = "2.1.0.post1"
 description = "Unified Polymarket v2 APIs with Pydantic data validation - Clob, Gamma, Data, Web3, Websockets, GraphQL clients."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    { name = "Razvan Gheorghe", email = "razvan@gheorghe.me" }
+    { name = "mileswangs", email = "wangshuosum@gmail.com" }
 ]
 
 # PEP 631-compliant dependencies table
@@ -51,7 +51,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/polymarket_apis"]
+packages = ["src/polymarket_apis", "src/pm_apis"]
 
 [tool.uv]
 managed = true
@@ -177,4 +177,4 @@ lint.ignore = [
 
 
 [project.urls]
-repository = "https://github.com/qualiaenjoyer/polymarket-apis"
+repository = "https://github.com/mileswangs/pm-apis"

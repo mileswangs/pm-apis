@@ -1,0 +1,50 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pm-apis/
+
+    steps:
+      - uses: actions/checkout@v6.0.1
+
+      - uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7.1.6
+        with:
+          enable-cache: true
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Check package metadata
+        run: uvx --from twine twine check dist/*
+
+      - name: Install and import built wheel
+        shell: bash
+        run: |
+          uv venv .venv-install-check
+          uv pip install --python .venv-install-check/bin/python dist/*.whl
+          .venv-install-check/bin/python -c "import pm_apis, polymarket_apis; print(pm_apis.__version__, polymarket_apis.__version__)"
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

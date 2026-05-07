@@ -1,4 +1,4 @@
-# polymarket-apis [![PyPI version](https://img.shields.io/pypi/v/polymarket-apis.svg)](https://pypi.org/project/polymarket-apis/)
+# pm-apis [![PyPI version](https://img.shields.io/pypi/v/pm-apis.svg)](https://pypi.org/project/pm-apis/)
 
 Unified Polymarket v2 APIs with Pydantic data validation - Clob, Gamma, Data, Web3, Websockets, GraphQL clients.
 

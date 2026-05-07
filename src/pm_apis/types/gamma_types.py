@@ -1,0 +1,51 @@
+"""Compatibility re-exports for :mod:`polymarket_apis.types.gamma_types`."""
+
+from __future__ import annotations
+
+from polymarket_apis.types.gamma_types import (
+    OptimizedImage as OptimizedImage,
+    FeeSchedule as FeeSchedule,
+    GammaMarket as GammaMarket,
+    Series as Series,
+    Category as Category,
+    Tag as Tag,
+    TagRelation as TagRelation,
+    Chat as Chat,
+    Collection as Collection,
+    Creator as Creator,
+    Template as Template,
+    ClobReward as ClobReward,
+    Team as Team,
+    Sport as Sport,
+    Event as Event,
+    ProfilePosition as ProfilePosition,
+    Profile as Profile,
+    Comment as Comment,
+    Reaction as Reaction,
+    Pagination as Pagination,
+    SearchResult as SearchResult,
+)
+
+__all__ = [
+    "OptimizedImage",
+    "FeeSchedule",
+    "GammaMarket",
+    "Series",
+    "Category",
+    "Tag",
+    "TagRelation",
+    "Chat",
+    "Collection",
+    "Creator",
+    "Template",
+    "ClobReward",
+    "Team",
+    "Sport",
+    "Event",
+    "ProfilePosition",
+    "Profile",
+    "Comment",
+    "Reaction",
+    "Pagination",
+    "SearchResult",
+]

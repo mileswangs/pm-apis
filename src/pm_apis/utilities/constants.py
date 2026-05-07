@@ -1,0 +1,43 @@
+"""Compatibility re-exports for :mod:`polymarket_apis.utilities.constants`."""
+
+from __future__ import annotations
+
+from polymarket_apis.utilities.constants import (
+    L0 as L0,
+    L1 as L1,
+    L2 as L2,
+    CREDENTIAL_CREATION_WARNING as CREDENTIAL_CREATION_WARNING,
+    L1_AUTH_UNAVAILABLE as L1_AUTH_UNAVAILABLE,
+    L2_AUTH_UNAVAILABLE as L2_AUTH_UNAVAILABLE,
+    ADDRESS_ZERO as ADDRESS_ZERO,
+    BYTES32_ZERO as BYTES32_ZERO,
+    HASH_ZERO as HASH_ZERO,
+    ORDER_VERSION_MISMATCH_ERROR as ORDER_VERSION_MISMATCH_ERROR,
+    DEPOSIT_WALLET_DOMAIN_NAME as DEPOSIT_WALLET_DOMAIN_NAME,
+    DEPOSIT_WALLET_DOMAIN_VERSION as DEPOSIT_WALLET_DOMAIN_VERSION,
+    AMOY as AMOY,
+    POLYGON as POLYGON,
+    END_CURSOR as END_CURSOR,
+    BUY as BUY,
+    SELL as SELL,
+)
+
+__all__ = [
+    "L0",
+    "L1",
+    "L2",
+    "CREDENTIAL_CREATION_WARNING",
+    "L1_AUTH_UNAVAILABLE",
+    "L2_AUTH_UNAVAILABLE",
+    "ADDRESS_ZERO",
+    "BYTES32_ZERO",
+    "HASH_ZERO",
+    "ORDER_VERSION_MISMATCH_ERROR",
+    "DEPOSIT_WALLET_DOMAIN_NAME",
+    "DEPOSIT_WALLET_DOMAIN_VERSION",
+    "AMOY",
+    "POLYGON",
+    "END_CURSOR",
+    "BUY",
+    "SELL",
+]

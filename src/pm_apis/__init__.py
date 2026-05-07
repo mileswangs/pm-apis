@@ -1,24 +1,47 @@
-"""Compatibility import package for :mod:`polymarket_apis`."""
+"""Compatibility re-exports for :mod:`polymarket_apis`."""
 
 from __future__ import annotations
 
-import sys
-from importlib import import_module
+from polymarket_apis import (
+    ApiCreds as ApiCreds,
+    AsyncPolymarketGraphQLClient as AsyncPolymarketGraphQLClient,
+    FeeSchedule as FeeSchedule,
+    MarketIDs as MarketIDs,
+    MarketOrderArgs as MarketOrderArgs,
+    OrderArgs as OrderArgs,
+    OrderType as OrderType,
+    PolymarketClobClient as PolymarketClobClient,
+    PolymarketDataClient as PolymarketDataClient,
+    PolymarketGammaClient as PolymarketGammaClient,
+    PolymarketGaslessWeb3Client as PolymarketGaslessWeb3Client,
+    PolymarketGraphQLClient as PolymarketGraphQLClient,
+    PolymarketReadOnlyClobClient as PolymarketReadOnlyClobClient,
+    PolyWSS as PolyWSS,
+    PolyWSSMarket as PolyWSSMarket,
+    PolymarketWeb3Client as PolymarketWeb3Client,
+    __author__ as __author__,
+    __email__ as __email__,
+    __version__ as __version__,
+)
 
-from polymarket_apis import *  # noqa: F403
-from polymarket_apis import __all__, __author__, __email__, __version__
-
-_SUBMODULES = {
-    "clients",
-    "testing",
-    "types",
-    "utilities",
-}
-
-
-def __getattr__(name: str):
-    if name in _SUBMODULES:
-        module = import_module(f"polymarket_apis.{name}")
-        sys.modules[f"{__name__}.{name}"] = module
-        return module
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = [
+    "ApiCreds",
+    "AsyncPolymarketGraphQLClient",
+    "FeeSchedule",
+    "MarketIDs",
+    "MarketOrderArgs",
+    "OrderArgs",
+    "OrderType",
+    "PolymarketClobClient",
+    "PolymarketDataClient",
+    "PolymarketGammaClient",
+    "PolymarketGaslessWeb3Client",
+    "PolymarketGraphQLClient",
+    "PolymarketReadOnlyClobClient",
+    "PolyWSS",
+    "PolyWSSMarket",
+    "PolymarketWeb3Client",
+    "__author__",
+    "__email__",
+    "__version__",
+]

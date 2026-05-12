@@ -2196,7 +2196,7 @@ wheels = [
 
 [[package]]
 name = "pm-apis"
-version = "2.1.0.post6"
+version = "2.1.0.post7"
 source = { editable = "." }
 dependencies = [
     { name = "gql", extra = ["httpx"] },

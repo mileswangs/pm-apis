@@ -82,97 +82,88 @@ LIVE_DATA_EVENT_CLASSES: Mapping[str, type[LiveDataEvents]] = {
 }
 
 
-async def _on_market_message(message: str | bytes):
+async def _on_market_message(message):
     try:
-        payload = orjson.loads(message)
-        if isinstance(payload, list):
-            for item in payload:
+        if isinstance(message, list):
+            for item in message:
                 book_event = OrderBookSummaryEvent(**item)
                 logger.info("%s", book_event)
             return
 
-        match payload["event_type"]:
+        match message["event_type"]:
             case "book":
-                book_event = OrderBookSummaryEvent(**payload)
+                book_event = OrderBookSummaryEvent(**message)
                 logger.info("%s", book_event)
             case "price_change":
-                price_event = PriceChangeEvent(**payload)
+                price_event = PriceChangeEvent(**message)
                 logger.info("%s", price_event)
             case "tick_size_change":
-                tick_event = TickSizeChangeEvent(**payload)
+                tick_event = TickSizeChangeEvent(**message)
                 logger.info("%s", tick_event)
             case "last_trade_price":
-                last_trade_event = LastTradePriceEvent(**payload)
+                last_trade_event = LastTradePriceEvent(**message)
                 logger.info("%s", last_trade_event)
             case _:
                 pass
-    except orjson.JSONDecodeError:
-        logger.warning("Market message JSON decode error, raw message: %s", message)
     except ValidationError as e:
         logger.error(
             "Market message validation error: %s | message=%s", e.errors(), message
         )
 
 
-async def _on_user_message(message: str | bytes):
+async def _on_user_message(message):
     try:
-        payload = orjson.loads(message)
-        match payload["event_type"]:
+        match message["event_type"]:
             case "order":
-                logger.info("%s", OrderEvent(**payload))
+                logger.info("%s", OrderEvent(**message))
             case "trade":
-                logger.info("%s", TradeEvent(**payload))
-    except orjson.JSONDecodeError:
-        logger.warning("User message JSON decode error, raw message: %s", message)
+                logger.info("%s", TradeEvent(**message))
     except ValidationError as e:
         logger.error(
             "User message validation error: %s | message=%s", e.errors(), message
         )
 
 
-async def _on_live_data_message(message: str | bytes):
+async def _on_live_data_message(message):
     try:
-        payload = orjson.loads(message)
-        match payload["type"]:
+        match message["type"]:
             case "trades":
-                logger.info("%s", ActivityTradeEvent(**payload))
+                logger.info("%s", ActivityTradeEvent(**message))
             case "orders_matched":
-                logger.info("%s", ActivityOrderMatchEvent(**payload))
+                logger.info("%s", ActivityOrderMatchEvent(**message))
             case "comment_created" | "comment_removed":
-                logger.info("%s", CommentEvent(**payload))
+                logger.info("%s", CommentEvent(**message))
             case "reaction_created" | "reaction_removed":
-                logger.info("%s", ReactionEvent(**payload))
+                logger.info("%s", ReactionEvent(**message))
             case (
                 "request_created"
                 | "request_edited"
                 | "request_canceled"
                 | "request_expired"
             ):
-                logger.info("%s", RequestEvent(**payload))
+                logger.info("%s", RequestEvent(**message))
             case "quote_created" | "quote_edited" | "quote_canceled" | "quote_expired":
-                logger.info("%s", QuoteEvent(**payload))
+                logger.info("%s", QuoteEvent(**message))
             case "subscribe":
-                logger.info("%s", CryptoPriceSubscribeEvent(**payload))
+                logger.info("%s", CryptoPriceSubscribeEvent(**message))
             case "update":
-                logger.info("%s", CryptoPriceUpdateEvent(**payload))
+                logger.info("%s", CryptoPriceUpdateEvent(**message))
             case "agg_orderbook":
-                logger.info("%s", LiveDataOrderBookSummaryEvent(**payload))
+                logger.info("%s", LiveDataOrderBookSummaryEvent(**message))
             case "price_change":
-                logger.info("%s", LiveDataPriceChangeEvent(**payload))
+                logger.info("%s", LiveDataPriceChangeEvent(**message))
             case "last_trade_price":
-                logger.info("%s", LiveDataLastTradePriceEvent(**payload))
+                logger.info("%s", LiveDataLastTradePriceEvent(**message))
             case "tick_size_change":
-                logger.info("%s", LiveDataTickSizeChangeEvent(**payload))
+                logger.info("%s", LiveDataTickSizeChangeEvent(**message))
             case "market_created" | "market_resolved":
-                logger.info("%s", MarketStatusChangeEvent(**payload))
+                logger.info("%s", MarketStatusChangeEvent(**message))
             case "order":
-                logger.info("%s", LiveDataOrderEvent(**payload))
+                logger.info("%s", LiveDataOrderEvent(**message))
             case "trade":
-                logger.info("%s", LiveDataTradeEvent(**payload))
+                logger.info("%s", LiveDataTradeEvent(**message))
             case _:
-                logger.info("%s", payload)
-    except orjson.JSONDecodeError:
-        logger.warning("Live data message JSON decode error, raw message: %s", message)
+                logger.info("%s", message)
     except ValidationError as e:
         logger.error(
             "Live data message validation error: %s | message=%s",
@@ -181,12 +172,9 @@ async def _on_live_data_message(message: str | bytes):
         )
 
 
-async def _on_sports_message(message: str | bytes):
+async def _on_sports_message(message):
     try:
-        payload = orjson.loads(message)
-        logger.info("%s", SportsGameUpdate(**payload))
-    except orjson.JSONDecodeError:
-        logger.warning("Sports message JSON decode error, raw message: %s", message)
+        logger.info("%s", SportsGameUpdate(**message))
     except ValidationError as e:
         logger.error(
             "Sports message validation error: %s | message=%s", e.errors(), message
@@ -195,7 +183,7 @@ async def _on_sports_message(message: str | bytes):
 
 class PolyWSSMarket:
     def __init__(
-        self, token_ids: list[str], on_message: Callable[[str | bytes], Awaitable[None]]
+        self, token_ids: list[str], on_message: Callable[[Any], Awaitable[None]]
     ):
         self.ws: websockets.ClientConnection | None = None
         self.on_message = on_message
@@ -236,6 +224,25 @@ class PolyWSSMarket:
             except Exception as e:
                 logger.error("[WS] 订阅 token 失败: %s", e)
 
+    async def _on_event(self, event):
+        try:
+            data = orjson.loads(event)
+            messages = data if isinstance(data, list) else [data]
+            for message in messages:
+                await self.on_message(message)
+
+        except orjson.JSONDecodeError:
+            if event == "PONG":
+                logger.debug("[WS] 收到 heartbeat pong")
+                return
+            logger.warning("[WS] JSON decode error, raw event: %s", event)
+        except ValidationError as e:
+            logger.error(
+                "[WS] Event validation error: %s | event=%s",
+                e.errors(),
+                orjson.loads(event),
+            )
+
     async def _heartbeat_loop(self, ws: websockets.ClientConnection):
         while True:
             await asyncio.sleep(10)
@@ -268,10 +275,7 @@ class PolyWSSMarket:
 
                         # 接收事件
                         async for event in ws:
-                            if event == "PONG":
-                                logger.debug("[WS] 收到 heartbeat pong")
-                                continue
-                            await self.on_message(event)
+                            await self._on_event(event)
                     finally:
                         heartbeat_task.cancel()
                         await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -296,14 +300,14 @@ class PolymarketWebsocketsClient:
     async def user_socket(
         self,
         creds: ApiCreds,
-        on_message: Callable[[str | bytes], Awaitable[None]] = _on_user_message,
+        on_message: Callable[[Any], Awaitable[None]] = _on_user_message,
     ):
         """
         Connect to the user websocket and subscribe to user events.
 
         Args:
             creds: API credentials for authentication
-            on_message: Callback function to process raw websocket messages
+            on_message: Callback function to process parsed messages
 
         """
         reconnect_delay = RECONNECT_BACKOFF_INITIAL_SECONDS
@@ -321,7 +325,13 @@ class PolymarketWebsocketsClient:
 
                     # 接收事件
                     async for event in ws:
-                        await on_message(event)
+                        try:
+                            message = orjson.loads(event)
+                            await on_message(message)
+                        except orjson.JSONDecodeError:
+                            logger.warning(
+                                "[User WS] JSON decode error, raw event: %s", event
+                            )
 
             except (websockets.exceptions.ConnectionClosed, Exception) as e:
                 logger.error("[User WS] WebSocket 连接异常: %s", e)
@@ -334,7 +344,7 @@ class PolymarketWebsocketsClient:
     async def live_data_socket(
         self,
         subscriptions: list[dict[str, Any]],
-        on_message: Callable[[str | bytes], Awaitable[None]] = _on_live_data_message,
+        on_message: Callable[[Any], Awaitable[None]] = _on_live_data_message,
         creds: Optional[ApiCreds] = None,
     ):
         # info on how to subscribe found at https://github.com/Polymarket/real-time-data-client?tab=readme-ov-file#subscribe
@@ -343,7 +353,7 @@ class PolymarketWebsocketsClient:
 
         Args:
             subscriptions: List of subscription configurations
-            on_message: Callback function to process raw websocket messages
+            on_message: Callback function to process parsed messages
             creds: ApiCreds for authentication if subscribing to clob_user topic
 
         """
@@ -386,7 +396,14 @@ class PolymarketWebsocketsClient:
 
                     # 接收事件
                     async for event in ws:
-                        await on_message(event)
+                        try:
+                            message = orjson.loads(event)
+                            await on_message(message)
+                        except orjson.JSONDecodeError:
+                            logger.warning(
+                                "[Live Data WS] JSON decode error, raw event: %s",
+                                event,
+                            )
 
             except (websockets.exceptions.ConnectionClosed, Exception) as e:
                 logger.error("[Live Data WS] WebSocket 连接异常: %s", e)
@@ -398,7 +415,7 @@ class PolymarketWebsocketsClient:
 
     async def sports_socket(
         self,
-        on_message: Callable[[str | bytes], Awaitable[None]] = _on_sports_message,
+        on_message: Callable[[Any], Awaitable[None]] = _on_sports_message,
     ):
         reconnect_delay = RECONNECT_BACKOFF_INITIAL_SECONDS
         while True:
@@ -411,7 +428,13 @@ class PolymarketWebsocketsClient:
                     reconnect_delay = RECONNECT_BACKOFF_INITIAL_SECONDS
 
                     async for event in ws:
-                        await on_message(event)
+                        try:
+                            message = orjson.loads(event)
+                            await on_message(message)
+                        except orjson.JSONDecodeError:
+                            logger.warning(
+                                "[Sports WS] JSON decode error, raw event: %s", event
+                            )
 
             except (websockets.exceptions.ConnectionClosed, Exception) as e:
                 logger.error("[Sports WS] WebSocket 连接异常: %s", e)
